@@ -1,7 +1,7 @@
 package main
 
-import "fmt"
+import "github.com/mj1618/desktop-cli/cmd"
 
 func main() {
-	fmt.Println("desktop-cli")
+	cmd.Execute()
 }
