@@ -5,6 +5,8 @@ tasks:
     prompt-string: |
       # Planner Agent Prompt
 
+      Note that whatever task file you create - it must be small enough to fit into a single agents context window of about 100k tokens.
+
       1. Review Improvement Opportunities
          - Examine swarm/PLAN.md and the codebase for potential improvements, such as missing commands or incomplete features.
 
