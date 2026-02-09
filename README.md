@@ -106,6 +106,18 @@ desktop-cli read --window-id 5678
 
 # Filter to a bounding box region (x,y,width,height)
 desktop-cli read --app "Finder" --bbox "0,0,800,600"
+
+# Search for elements by text (case-insensitive substring match on title/value/description)
+desktop-cli read --app "Safari" --text "Submit"
+
+# Combine text search with role filter
+desktop-cli read --app "Safari" --text "Save" --roles "btn"
+
+# Get results as a flat list (no nesting, includes path breadcrumbs)
+desktop-cli read --app "Safari" --roles "btn" --flat
+
+# Find a specific element by text as a flat result (most token-efficient)
+desktop-cli read --app "Safari" --text "Submit" --flat
 ```
 
 ### Click an element
@@ -220,6 +232,25 @@ desktop-cli action --id 15 --action pick --app "Safari"
 desktop-cli action --id 3 --action cancel --app "Safari"
 ```
 
+### Set element values
+
+```bash
+# Set a text field's value directly (instant, no keystroke simulation)
+desktop-cli set-value --id 4 --value "hello world" --app "Safari"
+
+# Set a slider to a specific position
+desktop-cli set-value --id 12 --value "75" --app "System Settings"
+
+# Clear a text field
+desktop-cli set-value --id 4 --value "" --app "Safari"
+
+# Set focus on an element
+desktop-cli set-value --id 4 --attribute focused --value "true" --app "Safari"
+
+# Set selection state
+desktop-cli set-value --id 8 --attribute selected --value "true" --app "Finder"
+```
+
 ### Focus a window
 
 ```bash
@@ -235,6 +266,33 @@ desktop-cli focus --app "Safari" --window "GitHub"
 # Focus by system window ID
 desktop-cli focus --window-id 5678
 ```
+
+### Observe UI changes
+
+```bash
+# Watch Safari for any UI changes, emit diffs as JSONL
+desktop-cli observe --app "Safari"
+
+# Watch for changes to buttons and links only
+desktop-cli observe --app "Safari" --roles "btn,lnk"
+
+# Watch a specific window with custom polling interval (ms)
+desktop-cli observe --app "Chrome" --window "Gmail" --interval 500
+
+# Watch for a limited duration (seconds)
+desktop-cli observe --app "Safari" --duration 10
+
+# Watch at limited depth
+desktop-cli observe --app "Safari" --depth 3
+
+# Ignore noisy layout and focus changes
+desktop-cli observe --app "Safari" --ignore-bounds --ignore-focus
+
+# Pipe to jq for real-time filtering
+desktop-cli observe --app "Safari" | jq 'select(.type=="added")'
+```
+
+Output is always JSONL (one JSON object per line). Events: `snapshot` (initial count), `added`, `removed`, `changed`, `error`, `done`.
 
 ### Screenshot
 

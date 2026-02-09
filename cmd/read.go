@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mj1618/desktop-cli/internal/model"
 	"github.com/mj1618/desktop-cli/internal/output"
 	"github.com/mj1618/desktop-cli/internal/platform"
 	"github.com/spf13/cobra"
@@ -29,6 +30,8 @@ func init() {
 	readCmd.Flags().String("bbox", "", "Only include elements within bounding box (x,y,w,h)")
 	readCmd.Flags().Bool("compact", false, "Ultra-compact output: flatten tree, minimal keys")
 	readCmd.Flags().Bool("pretty", false, "Pretty-print output (no-op for YAML, which is always human-readable)")
+	readCmd.Flags().String("text", "", "Filter elements by text content (case-insensitive substring match on title, value, description)")
+	readCmd.Flags().Bool("flat", false, "Output as flat list with path breadcrumbs instead of nested tree")
 }
 
 func runRead(cmd *cobra.Command, args []string) error {
@@ -46,6 +49,8 @@ func runRead(cmd *cobra.Command, args []string) error {
 	visibleOnly, _ := cmd.Flags().GetBool("visible-only")
 	bboxStr, _ := cmd.Flags().GetString("bbox")
 	compact, _ := cmd.Flags().GetBool("compact")
+	text, _ := cmd.Flags().GetString("text")
+	flat, _ := cmd.Flags().GetBool("flat")
 
 	var roles []string
 	if rolesStr != "" {
@@ -83,6 +88,23 @@ func runRead(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Apply text filter
+	if text != "" {
+		elements = model.FilterByText(elements, text)
+	}
+
+	// Output as flat list or tree
+	if flat {
+		flatElements := model.FlattenElements(elements)
+		result := output.ReadFlatResult{
+			App:      appName,
+			PID:      pid,
+			TS:       time.Now().Unix(),
+			Elements: flatElements,
+		}
+		return output.Print(result)
+	}
+
 	result := output.ReadResult{
 		App:      appName,
 		PID:      pid,
@@ -90,5 +112,5 @@ func runRead(cmd *cobra.Command, args []string) error {
 		Elements: elements,
 	}
 
-	return output.PrintYAML(result)
+	return output.Print(result)
 }

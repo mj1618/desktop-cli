@@ -21,6 +21,8 @@ func TestReadCommand_Flags(t *testing.T) {
 		{"bbox", "string"},
 		{"compact", "bool"},
 		{"pretty", "bool"},
+		{"text", "string"},
+		{"flat", "bool"},
 	}
 
 	for _, tt := range tests {

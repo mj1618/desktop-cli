@@ -13,11 +13,11 @@ import (
 
 // WaitResult is the YAML output of a wait command.
 type WaitResult struct {
-	OK      bool   `yaml:"ok"`
-	Action  string `yaml:"action"`
-	Elapsed string `yaml:"elapsed"`
-	Match   string `yaml:"match,omitempty"`
-	TimedOut bool  `yaml:"timed_out,omitempty"`
+	OK       bool   `yaml:"ok"                  json:"ok"`
+	Action   string `yaml:"action"              json:"action"`
+	Elapsed  string `yaml:"elapsed"             json:"elapsed"`
+	Match    string `yaml:"match,omitempty"     json:"match,omitempty"`
+	TimedOut bool   `yaml:"timed_out,omitempty" json:"timed_out,omitempty"`
 }
 
 var waitCmd = &cobra.Command{
@@ -110,7 +110,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 		if conditionMet {
 			elapsed := time.Since(start)
 			matchDesc := describeCondition(forText, forRole, forID, gone)
-			return output.PrintYAML(WaitResult{
+			return output.Print(WaitResult{
 				OK:      true,
 				Action:  "wait",
 				Elapsed: fmt.Sprintf("%.1fs", elapsed.Seconds()),
@@ -122,7 +122,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 			elapsed := time.Since(start)
 			matchDesc := describeCondition(forText, forRole, forID, gone)
 			// Print the result, then return an error for non-zero exit code
-			_ = output.PrintYAML(WaitResult{
+			_ = output.Print(WaitResult{
 				OK:      false,
 				Action:  "wait",
 				Elapsed: fmt.Sprintf("%.1fs", elapsed.Seconds()),

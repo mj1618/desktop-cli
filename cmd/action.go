@@ -10,10 +10,10 @@ import (
 
 // ActionResult is the YAML output of a successful action command.
 type ActionResult struct {
-	OK     bool   `yaml:"ok"`
-	Action string `yaml:"action"`
-	ID     int    `yaml:"id"`
-	Name   string `yaml:"name"`
+	OK     bool   `yaml:"ok"     json:"ok"`
+	Action string `yaml:"action" json:"action"`
+	ID     int    `yaml:"id"     json:"id"`
+	Name   string `yaml:"name"   json:"name"`
 }
 
 var actionCmd = &cobra.Command{
@@ -80,7 +80,7 @@ func runAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return output.PrintYAML(ActionResult{
+	return output.Print(ActionResult{
 		OK:     true,
 		Action: "action",
 		ID:     id,

@@ -10,12 +10,12 @@ import (
 
 // ClickResult is the YAML output of a successful click.
 type ClickResult struct {
-	OK     bool   `yaml:"ok"`
-	Action string `yaml:"action"`
-	X      int    `yaml:"x"`
-	Y      int    `yaml:"y"`
-	Button string `yaml:"button"`
-	Count  int    `yaml:"count"`
+	OK     bool   `yaml:"ok"     json:"ok"`
+	Action string `yaml:"action" json:"action"`
+	X      int    `yaml:"x"      json:"x"`
+	Y      int    `yaml:"y"      json:"y"`
+	Button string `yaml:"button" json:"button"`
+	Count  int    `yaml:"count"  json:"count"`
 }
 
 var clickCmd = &cobra.Command{
@@ -98,7 +98,7 @@ func runClick(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return output.PrintYAML(ClickResult{
+	return output.Print(ClickResult{
 		OK:     true,
 		Action: "click",
 		X:      x,

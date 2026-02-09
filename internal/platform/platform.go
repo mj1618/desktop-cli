@@ -40,3 +40,10 @@ type ActionPerformer interface {
 	// by its sequential ID within the given read scope.
 	PerformAction(opts ActionOptions) error
 }
+
+// ValueSetter sets accessibility attribute values directly on UI elements.
+type ValueSetter interface {
+	// SetValue sets the value attribute on an element identified
+	// by its sequential ID within the given read scope.
+	SetValue(opts SetValueOptions) error
+}

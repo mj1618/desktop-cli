@@ -10,12 +10,12 @@ import (
 
 // DragResult is the YAML output of a successful drag.
 type DragResult struct {
-	OK     bool   `yaml:"ok"`
-	Action string `yaml:"action"`
-	FromX  int    `yaml:"from_x"`
-	FromY  int    `yaml:"from_y"`
-	ToX    int    `yaml:"to_x"`
-	ToY    int    `yaml:"to_y"`
+	OK     bool   `yaml:"ok"     json:"ok"`
+	Action string `yaml:"action" json:"action"`
+	FromX  int    `yaml:"from_x" json:"from_x"`
+	FromY  int    `yaml:"from_y" json:"from_y"`
+	ToX    int    `yaml:"to_x"   json:"to_x"`
+	ToY    int    `yaml:"to_y"   json:"to_y"`
 }
 
 var dragCmd = &cobra.Command{
@@ -99,7 +99,7 @@ func runDrag(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return output.PrintYAML(DragResult{
+	return output.Print(DragResult{
 		OK:     true,
 		Action: "drag",
 		FromX:  fromX,

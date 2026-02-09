@@ -11,12 +11,12 @@ import (
 
 // ScrollResult is the YAML output of a successful scroll.
 type ScrollResult struct {
-	OK        bool   `yaml:"ok"`
-	Action    string `yaml:"action"`
-	Direction string `yaml:"direction"`
-	Amount    int    `yaml:"amount"`
-	X         int    `yaml:"x"`
-	Y         int    `yaml:"y"`
+	OK        bool   `yaml:"ok"        json:"ok"`
+	Action    string `yaml:"action"    json:"action"`
+	Direction string `yaml:"direction" json:"direction"`
+	Amount    int    `yaml:"amount"    json:"amount"`
+	X         int    `yaml:"x"         json:"x"`
+	Y         int    `yaml:"y"         json:"y"`
 }
 
 var scrollCmd = &cobra.Command{
@@ -100,7 +100,7 @@ func runScroll(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return output.PrintYAML(ScrollResult{
+	return output.Print(ScrollResult{
 		OK:        true,
 		Action:    "scroll",
 		Direction: strings.ToLower(direction),

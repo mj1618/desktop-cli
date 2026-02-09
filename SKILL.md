@@ -34,9 +34,13 @@ desktop-cli read --app "Safari" --window "GitHub"
 desktop-cli read --pid 1234
 desktop-cli read --window-id 5678
 desktop-cli read --app "Finder" --bbox "0,0,800,600"
+desktop-cli read --app "Safari" --text "Submit"                    # search by text (title/value/description)
+desktop-cli read --app "Safari" --text "Save" --roles "btn"        # combine text + role filter
+desktop-cli read --app "Safari" --roles "btn" --flat               # flat list with path breadcrumbs
+desktop-cli read --app "Safari" --text "Submit" --flat             # find element by text, flat output
 ```
 
-Returns compact YAML with short keys: `i` (id), `r` (role), `t` (title), `v` (value), `d` (description), `b` (bounds), `c` (children), `a` (actions).
+Returns compact YAML with short keys: `i` (id), `r` (role), `t` (title), `v` (value), `d` (description), `b` (bounds), `c` (children), `a` (actions), `p` (path, flat mode only).
 
 ### Click an element
 
@@ -74,6 +78,24 @@ desktop-cli action --id 5 --action press --app "Safari"
 desktop-cli action --id 12 --action increment --app "System Settings"
 desktop-cli action --id 12 --action decrement --app "System Settings"
 desktop-cli action --id 8 --action showMenu --app "Finder"
+```
+
+### Set element values
+
+```bash
+desktop-cli set-value --id 4 --value "hello world" --app "Safari"
+desktop-cli set-value --id 12 --value "75" --app "System Settings"
+desktop-cli set-value --id 4 --value "" --app "Safari"
+desktop-cli set-value --id 4 --attribute focused --value "true" --app "Safari"
+```
+
+### Observe UI changes
+
+```bash
+desktop-cli observe --app "Safari"                                     # stream UI diffs as JSONL
+desktop-cli observe --app "Safari" --roles "btn,lnk" --interval 500    # watch specific roles, fast poll
+desktop-cli observe --app "Safari" --duration 10                       # observe for 10 seconds then stop
+desktop-cli observe --app "Safari" --ignore-bounds --ignore-focus      # reduce noise
 ```
 
 ### Wait for UI conditions
@@ -122,11 +144,14 @@ desktop-cli screenshot --pid 1234                               # by PID
 
 1. `list --windows` to find the target window
 2. `read --app <name> --depth 3 --roles "btn,lnk,input,txt"` to get the element tree as YAML
+   - Use `--text "Submit" --flat` to find a specific element efficiently (returns flat list, saves tokens)
 3. Use the element `i` (id) field with:
+   - `set-value --id <id> --value "..." --app <name>` to set text fields, sliders, etc. (preferred for value-holding elements)
    - `action --id <id> --app <name>` to press buttons, toggle checkboxes, etc. (preferred — works on occluded elements)
    - `click --id <id> --app <name>` to click at coordinates (fallback when action isn't available)
-   - `type --id <id> --app <name> --text "..."` to type into fields
-4. `wait --app <name> --for-text "..." --timeout 10` to wait for UI to update
+   - `type --id <id> --app <name> --text "..."` to type into fields (fallback for fields that don't support set-value)
+4. `wait --app <name> --for-text "..." --timeout 10` to wait for a known condition, OR
+   `observe --app <name> --duration 10` to stream UI diffs (token-efficient for open-ended monitoring)
 5. Repeat read/act/wait loop as needed
 6. If the accessibility tree lacks detail, use `screenshot --app <name>` as a vision model fallback
 
@@ -145,3 +170,4 @@ desktop-cli screenshot --pid 1234                               # by PID
 | `s` | Selected (boolean, omitted when false) |
 | `c` | Children (array of elements) |
 | `a` | Available actions |
+| `p` | Path breadcrumb (flat mode only, e.g. `window > toolbar > btn`) |

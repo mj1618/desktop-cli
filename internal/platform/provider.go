@@ -12,6 +12,7 @@ type Provider struct {
 	WindowManager   WindowManager
 	Screenshotter   Screenshotter
 	ActionPerformer ActionPerformer
+	ValueSetter     ValueSetter
 }
 
 // ErrUnsupported is returned on unsupported platforms.

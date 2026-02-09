@@ -12,10 +12,10 @@ import (
 
 // TypeResult is the YAML output of a successful type command.
 type TypeResult struct {
-	OK     bool   `yaml:"ok"`
-	Action string `yaml:"action"`
-	Text   string `yaml:"text,omitempty"`
-	Key    string `yaml:"key,omitempty"`
+	OK     bool   `yaml:"ok"             json:"ok"`
+	Action string `yaml:"action"         json:"action"`
+	Text   string `yaml:"text,omitempty" json:"text,omitempty"`
+	Key    string `yaml:"key,omitempty"  json:"key,omitempty"`
 }
 
 var typeCmd = &cobra.Command{
@@ -93,7 +93,7 @@ func runType(cmd *cobra.Command, args []string) error {
 		if err := provider.Inputter.KeyCombo(keys); err != nil {
 			return err
 		}
-		return output.PrintYAML(TypeResult{
+		return output.Print(TypeResult{
 			OK:     true,
 			Action: "key",
 			Key:    key,
@@ -103,7 +103,7 @@ func runType(cmd *cobra.Command, args []string) error {
 	if err := provider.Inputter.TypeText(text, delayMs); err != nil {
 		return err
 	}
-	return output.PrintYAML(TypeResult{
+	return output.Print(TypeResult{
 		OK:     true,
 		Action: "type",
 		Text:   text,

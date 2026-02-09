@@ -46,6 +46,76 @@ tasks:
 
     depends_on: [planner]
 
+  tester:
+    prompt-string: |
+      # Tester Agent Prompt
+
+      You are a tester for a Go CLI tool called `desktop-cli`. Your job is to run unit tests,
+      build the binary, and exercise the CLI to verify it behaves sensibly.
+
+      ## 1. Run Unit Tests
+
+      Run the full test suite:
+      ```
+      go test -v ./...
+      ```
+      Record any failures — test name, error message, and relevant output.
+
+      ## 2. Build the CLI
+
+      Build the binary from the project root:
+      ```
+      go build -o desktop-cli .
+      ```
+      If the build fails, record the compiler errors and skip to step 4.
+
+      ## 3. Exercise the CLI
+
+      Run the built binary with a variety of commands and check the output is sensible:
+
+      - `./desktop-cli --help` — should print usage info listing all subcommands
+      - `./desktop-cli list --help` — should print help for the list subcommand
+      - `./desktop-cli read --help` — should print help for the read subcommand
+      - `./desktop-cli click --help` — should print help for the click subcommand
+      - `./desktop-cli type --help` — should print help for the type subcommand
+      - `./desktop-cli scroll --help` — should print help for the scroll subcommand
+      - `./desktop-cli drag --help` — should print help for the drag subcommand
+      - `./desktop-cli focus --help` — should print help for the focus subcommand
+      - `./desktop-cli screenshot --help` — should print help for the screenshot subcommand
+      - `./desktop-cli action --help` — should print help for the action subcommand
+      - `./desktop-cli set-value --help` — should print help for the set-value subcommand
+      - `./desktop-cli wait --help` — should print help for the wait subcommand
+      - `./desktop-cli --version` — should print a version string
+      - `./desktop-cli list --windows` — should produce YAML output (may be empty but should not error)
+      - `./desktop-cli list --apps` — should produce YAML output (may be empty but should not error)
+      - `./desktop-cli read --app "NonExistentApp12345"` — should exit gracefully with a clear error, not panic
+
+      For each command:
+      - Verify the exit code is 0 for help/list commands and non-zero for expected errors.
+      - Verify stdout/stderr looks reasonable (no stack traces, no panics, no garbled output).
+      - Verify help output mentions the expected flags for that subcommand.
+      - If any issues, write them to a ./swarm/todo/{issue-name}.pending.md file with a clear description of the problem and steps to reproduce.
+
+      ## 4. Write or Improve Unit Tests
+
+      If you find gaps in test coverage — areas of the code that are exercised by the CLI but not
+      covered by unit tests — write new tests or improve existing ones. Focus on:
+      - Edge cases you discovered during CLI testing
+      - Error handling paths
+      - Flag validation and argument parsing
+
+      Run `go test -v ./...` again after adding tests to make sure they pass.
+
+      ## 5. Report Results
+
+      - If all tests pass and the CLI behaves correctly, clean up the built binary (`rm -f desktop-cli`)
+        and exit.
+      - If you find bugs or issues, create a new pending task for each one in `./swarm/todo/{issue-name}.pending.md`
+        with a clear description of the problem and steps to reproduce.
+      - If you wrote new tests, make sure they are committed-ready (compile and pass).
+
+    depends_on: [coder]
+
   checker:
     prompt-string: |
       # Review unstaged git changes for bugs
@@ -72,23 +142,12 @@ tasks:
 
       # If no bugs found
 
-      If the unstaged changes look correct, exit immediately.
+      If the unstaged changes look correct, git commit and push and then exit immediately.
 
-    depends_on: [coder]
+    depends_on: [tester]
 
 pipelines:
   development:
     iterations: 30
-    tasks: [planner, coder, checker]
-
-  development2:
-    iterations: 30
-    tasks: [planner, coder, checker]
-
-  development3:
-    iterations: 30
-    tasks: [planner, coder, checker]
-
-  development4:
-    iterations: 30
-    tasks: [planner, coder, checker]
+    parallelism: 2
+    tasks: [planner, coder, tester, checker]

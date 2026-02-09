@@ -62,6 +62,8 @@ type ReadOptions struct {
 	VisibleOnly bool     // Only include visible elements
 	BBox        *Bounds  // Only include elements within this bounding box (nil = no filter)
 	Compact     bool     // Use compact output format
+	Text        string   // Filter by text content (title, value, description)
+	Flat        bool     // Return flat list instead of tree
 }
 
 // ListOptions controls window/app listing.
@@ -98,4 +100,15 @@ type ActionOptions struct {
 	PID      int    // Scope to process
 	ID       int    // Element ID (from read output)
 	Action   string // Action to perform: "press", "cancel", "pick", "increment", "decrement", "confirm", "showMenu", "raise"
+}
+
+// SetValueOptions configures which element to set a value on and what value to set.
+type SetValueOptions struct {
+	App       string // Scope to application
+	Window    string // Scope to window
+	WindowID  int    // Scope to window by system ID
+	PID       int    // Scope to process
+	ID        int    // Element ID (from read output)
+	Value     string // The value to set (text for text fields, number for sliders, "true"/"false" for checkboxes)
+	Attribute string // AX attribute to set (default: "value" → kAXValueAttribute)
 }

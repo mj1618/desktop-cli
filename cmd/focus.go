@@ -10,11 +10,11 @@ import (
 
 // FocusResult is the YAML output of a successful focus.
 type FocusResult struct {
-	OK     bool   `yaml:"ok"`
-	Action string `yaml:"action"`
-	App    string `yaml:"app,omitempty"`
-	Window string `yaml:"window,omitempty"`
-	PID    int    `yaml:"pid,omitempty"`
+	OK     bool   `yaml:"ok"               json:"ok"`
+	Action string `yaml:"action"           json:"action"`
+	App    string `yaml:"app,omitempty"    json:"app,omitempty"`
+	Window string `yaml:"window,omitempty" json:"window,omitempty"`
+	PID    int    `yaml:"pid,omitempty"    json:"pid,omitempty"`
 }
 
 var focusCmd = &cobra.Command{
@@ -62,7 +62,7 @@ func runFocus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return output.PrintYAML(FocusResult{
+	return output.Print(FocusResult{
 		OK:     true,
 		Action: "focus",
 		App:    appName,

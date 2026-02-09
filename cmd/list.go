@@ -26,8 +26,8 @@ func init() {
 
 // appEntry is the YAML output for --apps mode.
 type appEntry struct {
-	App string `yaml:"app"`
-	PID int    `yaml:"pid"`
+	App string `yaml:"app" json:"app"`
+	PID int    `yaml:"pid" json:"pid"`
 }
 
 func runList(cmd *cobra.Command, args []string) error {
@@ -68,8 +68,8 @@ func runList(cmd *cobra.Command, args []string) error {
 		if entries == nil {
 			entries = []appEntry{}
 		}
-		return output.PrintYAML(entries)
+		return output.Print(entries)
 	}
 
-	return output.PrintYAML(windows)
+	return output.Print(windows)
 }

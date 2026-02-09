@@ -1,5 +1,7 @@
 package model
 
+import "strings"
+
 // FilterElements applies filters to a slice of elements, returning only
 // matching elements. It filters by roles and bounding box. Depth filtering
 // should happen during traversal, not here.
@@ -18,20 +20,55 @@ func FilterElements(elements []Element, roles []string, bbox *[4]int) []Element 
 
 	var result []Element
 	for _, el := range elements {
-		if len(roleSet) > 0 && !roleSet[el.Role] {
-			continue
-		}
-		if bbox != nil && !boundsIntersect(el.Bounds, *bbox) {
-			continue
-		}
-		// Recursively filter children
-		filtered := el
+		// Recursively filter children first
+		var filteredChildren []Element
 		if len(el.Children) > 0 {
-			filtered.Children = FilterElements(el.Children, roles, bbox)
+			filteredChildren = FilterElements(el.Children, roles, bbox)
 		}
-		result = append(result, filtered)
+
+		roleMatch := len(roleSet) == 0 || roleSet[el.Role]
+		bboxMatch := bbox == nil || boundsIntersect(el.Bounds, *bbox)
+
+		if roleMatch && bboxMatch {
+			// Element matches filters: include it with filtered children
+			filtered := el
+			filtered.Children = filteredChildren
+			result = append(result, filtered)
+		} else if len(filteredChildren) > 0 {
+			// Element doesn't match, but has matching descendants: include them directly
+			result = append(result, filteredChildren...)
+		}
 	}
 	return result
+}
+
+// FilterByText filters elements to only those whose title, value, or
+// description contains the given text (case-insensitive). It recursively
+// searches children and returns matching elements with their matching
+// children preserved. Parent elements are included if any descendant matches.
+func FilterByText(elements []Element, text string) []Element {
+	if text == "" {
+		return elements
+	}
+	textLower := strings.ToLower(text)
+	var result []Element
+	for _, el := range elements {
+		matched := textMatchesElement(el, textLower)
+		childMatches := FilterByText(el.Children, text)
+
+		if matched || len(childMatches) > 0 {
+			filtered := el
+			filtered.Children = childMatches
+			result = append(result, filtered)
+		}
+	}
+	return result
+}
+
+func textMatchesElement(el Element, textLower string) bool {
+	return strings.Contains(strings.ToLower(el.Title), textLower) ||
+		strings.Contains(strings.ToLower(el.Value), textLower) ||
+		strings.Contains(strings.ToLower(el.Description), textLower)
 }
 
 // boundsIntersect checks if two [x, y, width, height] rectangles overlap.
