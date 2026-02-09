@@ -1,0 +1,48 @@
+version: 2
+
+builds:
+  - main: .
+    binary: desktop-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/mj1618/desktop-cli/internal/version.Version={{.Version}}
+      - -X github.com/mj1618/desktop-cli/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/mj1618/desktop-cli/internal/version.BuildDate={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: mj1618
+    name: desktop-cli
+  draft: false
+  prerelease: auto
