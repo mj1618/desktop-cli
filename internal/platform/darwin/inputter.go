@@ -65,19 +65,27 @@ static int cg_move_mouse(float x, float y) {
 }
 
 // Lazily-initialised event source for keyboard events.
+// Uses kCGEventSourceStatePrivate so that synthetic events never inherit
+// stale modifier flags from the combined session state (e.g. a previous
+// Cmd+L would otherwise taint subsequent TypeText characters with the
+// Command modifier, turning "t" into Cmd+T).
 static CGEventSourceRef _kbSource = NULL;
 static CGEventSourceRef get_kb_source() {
     if (_kbSource == NULL) {
-        _kbSource = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+        _kbSource = CGEventSourceCreate(kCGEventSourceStatePrivate);
     }
     return _kbSource;
 }
 
 // Type a single Unicode character using CGEvent key simulation.
-static int cg_type_char(UniChar ch) {
+// keyCode should be the real macOS virtual key code for the character
+// (use 0 only when the correct code is unknown, e.g. non-ASCII).
+// modifiers should include kCGEventFlagMaskShift when the character
+// requires the Shift key (e.g. uppercase letters, symbols like '!').
+static int cg_type_char(UniChar ch, CGKeyCode keyCode, CGEventFlags modifiers) {
     CGEventSourceRef src = get_kb_source();
-    CGEventRef keyDown = CGEventCreateKeyboardEvent(src, 0, true);
-    CGEventRef keyUp   = CGEventCreateKeyboardEvent(src, 0, false);
+    CGEventRef keyDown = CGEventCreateKeyboardEvent(src, keyCode, true);
+    CGEventRef keyUp   = CGEventCreateKeyboardEvent(src, keyCode, false);
     if (!keyDown || !keyUp) {
         if (keyDown) CFRelease(keyDown);
         if (keyUp)   CFRelease(keyUp);
@@ -85,6 +93,8 @@ static int cg_type_char(UniChar ch) {
     }
     CGEventKeyboardSetUnicodeString(keyDown, 1, &ch);
     CGEventKeyboardSetUnicodeString(keyUp, 1, &ch);
+    CGEventSetFlags(keyDown, modifiers);
+    CGEventSetFlags(keyUp, modifiers);
     CGEventPost(kCGHIDEventTap, keyDown);
     usleep(1000); // 1 ms between key-down and key-up
     CGEventPost(kCGHIDEventTap, keyUp);
@@ -262,7 +272,8 @@ func (inp *DarwinInputter) TypeText(text string, delayMs int) error {
 		delayMs = 5
 	}
 	for _, ch := range text {
-		if C.cg_type_char(C.UniChar(ch)) != 0 {
+		keyCode, modifiers := charToKeyCode(ch)
+		if C.cg_type_char(C.UniChar(ch), C.CGKeyCode(keyCode), C.CGEventFlags(modifiers)) != 0 {
 			return fmt.Errorf("failed to type character %q", string(ch))
 		}
 		time.Sleep(time.Duration(delayMs) * time.Millisecond)
@@ -279,6 +290,66 @@ func (inp *DarwinInputter) KeyCombo(keys []string) error {
 		return fmt.Errorf("failed to post key combo")
 	}
 	return nil
+}
+
+// charKeyInfo holds the virtual key code and shift state for a character.
+type charKeyInfo struct {
+	keyCode uint16
+	shift   bool
+}
+
+// charKeyMap maps ASCII characters to their macOS virtual key codes (US keyboard layout).
+// Using correct key codes makes synthetic events indistinguishable from real
+// keyboard input, which is required by apps like Chrome's omnibox that inspect
+// raw key codes rather than only the Unicode string on the event.
+var charKeyMap = map[rune]charKeyInfo{
+	// Lowercase letters
+	'a': {0x00, false}, 'b': {0x0B, false}, 'c': {0x08, false}, 'd': {0x02, false},
+	'e': {0x0E, false}, 'f': {0x03, false}, 'g': {0x05, false}, 'h': {0x04, false},
+	'i': {0x22, false}, 'j': {0x26, false}, 'k': {0x28, false}, 'l': {0x25, false},
+	'm': {0x2E, false}, 'n': {0x2D, false}, 'o': {0x1F, false}, 'p': {0x23, false},
+	'q': {0x0C, false}, 'r': {0x0F, false}, 's': {0x01, false}, 't': {0x11, false},
+	'u': {0x20, false}, 'v': {0x09, false}, 'w': {0x0D, false}, 'x': {0x07, false},
+	'y': {0x10, false}, 'z': {0x06, false},
+	// Uppercase letters (same key codes, with Shift)
+	'A': {0x00, true}, 'B': {0x0B, true}, 'C': {0x08, true}, 'D': {0x02, true},
+	'E': {0x0E, true}, 'F': {0x03, true}, 'G': {0x05, true}, 'H': {0x04, true},
+	'I': {0x22, true}, 'J': {0x26, true}, 'K': {0x28, true}, 'L': {0x25, true},
+	'M': {0x2E, true}, 'N': {0x2D, true}, 'O': {0x1F, true}, 'P': {0x23, true},
+	'Q': {0x0C, true}, 'R': {0x0F, true}, 'S': {0x01, true}, 'T': {0x11, true},
+	'U': {0x20, true}, 'V': {0x09, true}, 'W': {0x0D, true}, 'X': {0x07, true},
+	'Y': {0x10, true}, 'Z': {0x06, true},
+	// Digits
+	'0': {0x1D, false}, '1': {0x12, false}, '2': {0x13, false}, '3': {0x14, false},
+	'4': {0x15, false}, '5': {0x17, false}, '6': {0x16, false}, '7': {0x1A, false},
+	'8': {0x1C, false}, '9': {0x19, false},
+	// Symbols (unshifted keys, US layout)
+	'-': {0x1B, false}, '=': {0x18, false}, '[': {0x21, false}, ']': {0x1E, false},
+	'\\': {0x2A, false}, ';': {0x29, false}, '\'': {0x27, false}, '`': {0x32, false},
+	',': {0x2B, false}, '.': {0x2F, false}, '/': {0x2C, false},
+	// Symbols (shifted keys, US layout)
+	'!': {0x12, true}, '@': {0x13, true}, '#': {0x14, true}, '$': {0x15, true},
+	'%': {0x17, true}, '^': {0x16, true}, '&': {0x1A, true}, '*': {0x1C, true},
+	'(': {0x19, true}, ')': {0x1D, true}, '_': {0x1B, true}, '+': {0x18, true},
+	'{': {0x21, true}, '}': {0x1E, true}, '|': {0x2A, true}, ':': {0x29, true},
+	'"': {0x27, true}, '~': {0x32, true}, '<': {0x2B, true}, '>': {0x2F, true},
+	'?': {0x2C, true},
+	// Whitespace
+	' ': {0x31, false}, '\t': {0x30, false}, '\n': {0x24, false},
+}
+
+// charToKeyCode returns the virtual key code and CGEvent modifier flags
+// for a character.  For unknown characters it returns key code 0 with no
+// modifiers, falling back to the Unicode-string-only approach.
+func charToKeyCode(ch rune) (uint16, uint64) {
+	if info, ok := charKeyMap[ch]; ok {
+		var mods uint64
+		if info.shift {
+			mods = uint64(C.kCGEventFlagMaskShift)
+		}
+		return info.keyCode, mods
+	}
+	return 0, 0
 }
 
 // macOS virtual key codes from Carbon Events.h.

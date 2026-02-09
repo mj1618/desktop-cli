@@ -71,6 +71,72 @@ func textMatchesElement(el Element, textLower string) bool {
 		strings.Contains(strings.ToLower(el.Description), textLower)
 }
 
+// FilterByFocused filters elements to only those that have Focused == true.
+// It recursively searches children and returns matching elements with their
+// ancestry path preserved (in tree mode) or just the focused element (in flat mode).
+func FilterByFocused(elements []Element) []Element {
+	var result []Element
+	for _, el := range elements {
+		childMatches := FilterByFocused(el.Children)
+
+		if el.Focused {
+			filtered := el
+			filtered.Children = childMatches
+			result = append(result, filtered)
+		} else if len(childMatches) > 0 {
+			filtered := el
+			filtered.Children = childMatches
+			result = append(result, filtered)
+		}
+	}
+	return result
+}
+
+// isEmptyGroup returns true if the element has role "group" or "other"
+// and has no title, value, or description — i.e. it carries no useful
+// information for an agent.
+func isEmptyGroup(el Element) bool {
+	return (el.Role == "group" || el.Role == "other") &&
+		el.Title == "" && el.Value == "" && el.Description == ""
+}
+
+// PruneEmptyGroups removes elements from a tree that are anonymous group/other
+// nodes (no title, value, or description). Children of removed nodes are
+// promoted to the parent. This dramatically reduces token usage when the
+// accessibility tree contains many structural-only container nodes.
+func PruneEmptyGroups(elements []Element) []Element {
+	var result []Element
+	for _, el := range elements {
+		// Recursively prune children first
+		prunedChildren := PruneEmptyGroups(el.Children)
+
+		if isEmptyGroup(el) {
+			// Skip this element, promote its children
+			result = append(result, prunedChildren...)
+		} else {
+			pruned := el
+			pruned.Children = prunedChildren
+			result = append(result, pruned)
+		}
+	}
+	return result
+}
+
+// PruneEmptyGroupsFlat removes FlatElements that are anonymous group/other
+// nodes (no title, value, or description). The path breadcrumbs of remaining
+// elements are not modified, preserving full ancestry context.
+func PruneEmptyGroupsFlat(elements []FlatElement) []FlatElement {
+	var result []FlatElement
+	for _, el := range elements {
+		if (el.Role == "group" || el.Role == "other") &&
+			el.Title == "" && el.Value == "" && el.Description == "" {
+			continue
+		}
+		result = append(result, el)
+	}
+	return result
+}
+
 // boundsIntersect checks if two [x, y, width, height] rectangles overlap.
 func boundsIntersect(a, b [4]int) bool {
 	// a and b are [x, y, width, height]

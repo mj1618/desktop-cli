@@ -128,6 +128,96 @@ func getTextTargetingFlags(cmd *cobra.Command, textFlagName string) (text string
 	return
 }
 
+// ElementInfo is a compact representation of a single UI element, used in
+// type/action/key responses to report the target or focused element.
+type ElementInfo struct {
+	ID          int    `yaml:"i"           json:"i"`
+	Role        string `yaml:"r"           json:"r"`
+	Title       string `yaml:"t,omitempty" json:"t,omitempty"`
+	Value       string `yaml:"v,omitempty" json:"v,omitempty"`
+	Description string `yaml:"d,omitempty" json:"d,omitempty"`
+	Bounds      [4]int `yaml:"b"           json:"b"`
+}
+
+// elementInfoFromElement converts an Element to a compact ElementInfo.
+func elementInfoFromElement(el *model.Element) *ElementInfo {
+	return &ElementInfo{
+		ID:          el.ID,
+		Role:        el.Role,
+		Title:       el.Title,
+		Value:       el.Value,
+		Description: el.Description,
+		Bounds:      el.Bounds,
+	}
+}
+
+// findFocusedElement searches the element tree for the element with f:true.
+// Returns nil if no focused element is found.
+func findFocusedElement(elements []model.Element) *ElementInfo {
+	for i := range elements {
+		if elements[i].Focused {
+			return elementInfoFromElement(&elements[i])
+		}
+		if found := findFocusedElement(elements[i].Children); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// readFocusedElement reads the element tree and returns the currently focused element.
+// If appName is empty, it tries to detect the frontmost app automatically.
+// Returns nil if no focused element is found (best-effort, never errors).
+func readFocusedElement(provider *platform.Provider, appName, window string, windowID, pid int) *ElementInfo {
+	if provider.Reader == nil {
+		return nil
+	}
+
+	// Determine app scope: use provided values, or detect frontmost app
+	if appName == "" && window == "" && windowID == 0 && pid == 0 && provider.WindowManager != nil {
+		if name, p, err := provider.WindowManager.GetFrontmostApp(); err == nil {
+			appName = name
+			pid = p
+		}
+	}
+	if appName == "" && pid == 0 && windowID == 0 {
+		return nil
+	}
+
+	elements, err := provider.Reader.ReadElements(platform.ReadOptions{
+		App:      appName,
+		Window:   window,
+		WindowID: windowID,
+		PID:      pid,
+	})
+	if err != nil {
+		return nil
+	}
+	return findFocusedElement(elements)
+}
+
+// readElementByID re-reads the element tree and returns info for a specific element.
+// Returns nil if the element is not found (best-effort, never errors).
+func readElementByID(provider *platform.Provider, appName, window string, windowID, pid, id int) *ElementInfo {
+	if provider.Reader == nil {
+		return nil
+	}
+	elements, err := provider.Reader.ReadElements(platform.ReadOptions{
+		App:      appName,
+		Window:   window,
+		WindowID: windowID,
+		PID:      pid,
+	})
+	if err != nil {
+		return nil
+	}
+	el := findElementByID(elements, id)
+	if el == nil {
+		return nil
+	}
+	return elementInfoFromElement(el)
+}
+
 // requireScope checks that at least one scoping flag is set.
 func requireScope(appName, window string, windowID, pid int) error {
 	if appName == "" && window == "" && windowID == 0 && pid == 0 {

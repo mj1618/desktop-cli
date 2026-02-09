@@ -32,6 +32,8 @@ func init() {
 	readCmd.Flags().Bool("pretty", false, "Pretty-print output (no-op for YAML, which is always human-readable)")
 	readCmd.Flags().String("text", "", "Filter elements by text content (case-insensitive substring match on title, value, description)")
 	readCmd.Flags().Bool("flat", false, "Output as flat list with path breadcrumbs instead of nested tree")
+	readCmd.Flags().Bool("prune", false, "Remove anonymous group/other elements that have no title, value, or description")
+	readCmd.Flags().Bool("focused", false, "Only return the currently focused element")
 }
 
 func runRead(cmd *cobra.Command, args []string) error {
@@ -51,6 +53,8 @@ func runRead(cmd *cobra.Command, args []string) error {
 	compact, _ := cmd.Flags().GetBool("compact")
 	text, _ := cmd.Flags().GetString("text")
 	flat, _ := cmd.Flags().GetBool("flat")
+	prune, _ := cmd.Flags().GetBool("prune")
+	focused, _ := cmd.Flags().GetBool("focused")
 
 	var roles []string
 	if rolesStr != "" {
@@ -93,9 +97,17 @@ func runRead(cmd *cobra.Command, args []string) error {
 		elements = model.FilterByText(elements, text)
 	}
 
+	// Apply focused filter
+	if focused {
+		elements = model.FilterByFocused(elements)
+	}
+
 	// Output as flat list or tree
 	if flat {
 		flatElements := model.FlattenElements(elements)
+		if prune {
+			flatElements = model.PruneEmptyGroupsFlat(flatElements)
+		}
 		result := output.ReadFlatResult{
 			App:      appName,
 			PID:      pid,
@@ -103,6 +115,10 @@ func runRead(cmd *cobra.Command, args []string) error {
 			Elements: flatElements,
 		}
 		return output.Print(result)
+	}
+
+	if prune {
+		elements = model.PruneEmptyGroups(elements)
 	}
 
 	result := output.ReadResult{

@@ -2,6 +2,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "action.h"
 
 // Helper: copy CFString to C string (caller frees).
@@ -80,10 +81,33 @@ static AXUIElementRef find_element_by_index(AXUIElementRef elem, int targetIndex
     return NULL;
 }
 
+// Activate enhanced UI mode for Chrome/Chromium browsers.
+// See ax_activate_enhanced_ui in accessibility.c for details.
+static void action_activate_enhanced_ui(AXUIElementRef app) {
+    CFTypeRef currentValue = NULL;
+    AXError err = AXUIElementCopyAttributeValue(app,
+        CFSTR("AXEnhancedUserInterface"), &currentValue);
+    Boolean alreadyEnabled = false;
+    if (err == kAXErrorSuccess && currentValue) {
+        if (CFGetTypeID(currentValue) == CFBooleanGetTypeID()) {
+            alreadyEnabled = CFBooleanGetValue((CFBooleanRef)currentValue);
+        }
+        CFRelease(currentValue);
+    }
+    if (!alreadyEnabled) {
+        AXUIElementSetAttributeValue(app,
+            CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
+        usleep(200000); // 200ms
+    }
+}
+
 int ax_perform_action(pid_t pid, const char* windowTitle, int windowID,
                       int maxDepth, int elementIndex, const char* actionName) {
     AXUIElementRef app = AXUIElementCreateApplication(pid);
     if (!app) return -1;
+
+    // Activate enhanced UI to ensure Chrome exposes web content
+    action_activate_enhanced_ui(app);
 
     // Get windows
     CFTypeRef windowsValue = NULL;

@@ -102,6 +102,41 @@ func (r *DarwinReader) ListWindows(opts platform.ListOptions) ([]model.Window, e
 		windows = []model.Window{}
 	}
 
+	// Enrich empty titles using the Accessibility API.
+	// Group windows with empty titles by PID so we query each app only once.
+	pidsNeedingTitles := make(map[int]bool)
+	for _, w := range windows {
+		if w.Title == "" {
+			pidsNeedingTitles[w.PID] = true
+		}
+	}
+	if len(pidsNeedingTitles) > 0 {
+		// Build a windowID->title map from accessibility API
+		axTitleMap := make(map[int]string)
+		for pid := range pidsNeedingTitles {
+			var axTitles *C.AXWindowTitle
+			var axCount C.int
+			if C.ax_list_window_titles(C.pid_t(pid), &axTitles, &axCount) == 0 && axCount > 0 {
+				axSlice := unsafe.Slice(axTitles, int(axCount))
+				for j := 0; j < int(axCount); j++ {
+					t := C.GoString(axSlice[j].title)
+					if t != "" {
+						axTitleMap[int(axSlice[j].windowID)] = t
+					}
+				}
+				C.ax_free_window_titles(axTitles, axCount)
+			}
+		}
+		// Fill in empty titles
+		for i := range windows {
+			if windows[i].Title == "" {
+				if t, ok := axTitleMap[windows[i].ID]; ok {
+					windows[i].Title = t
+				}
+			}
+		}
+	}
+
 	// Sort: focused first, then by app name
 	sort.Slice(windows, func(i, j int) bool {
 		if windows[i].Focused != windows[j].Focused {

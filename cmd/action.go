@@ -10,10 +10,11 @@ import (
 
 // ActionResult is the YAML output of a successful action command.
 type ActionResult struct {
-	OK     bool   `yaml:"ok"     json:"ok"`
-	Action string `yaml:"action" json:"action"`
-	ID     int    `yaml:"id"     json:"id"`
-	Name   string `yaml:"name"   json:"name"`
+	OK     bool         `yaml:"ok"                json:"ok"`
+	Action string       `yaml:"action"            json:"action"`
+	ID     int          `yaml:"id"                json:"id"`
+	Name   string       `yaml:"name"              json:"name"`
+	Target *ElementInfo `yaml:"target,omitempty"  json:"target,omitempty"`
 }
 
 var actionCmd = &cobra.Command{
@@ -97,10 +98,15 @@ func runAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	return output.Print(ActionResult{
+	result := ActionResult{
 		OK:     true,
 		Action: "action",
 		ID:     id,
 		Name:   action,
-	})
+	}
+
+	// Re-read the target element to include its current state
+	result.Target = readElementByID(provider, appName, window, windowID, pid, id)
+
+	return output.Print(result)
 }

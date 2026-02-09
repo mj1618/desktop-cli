@@ -29,4 +29,17 @@ int ax_read_elements(pid_t pid, const char* windowTitle, int windowID,
 // Free the element array returned by ax_read_elements.
 void ax_free_elements(AXElementInfo* elements, int count);
 
+// Window title info returned by ax_list_window_titles.
+typedef struct {
+    int windowID;
+    char* title;
+} AXWindowTitle;
+
+// Get window titles for all windows of an application via accessibility API.
+// Returns 0 on success, -1 on failure.
+int ax_list_window_titles(pid_t pid, AXWindowTitle** outTitles, int* outCount);
+
+// Free the window title array returned by ax_list_window_titles.
+void ax_free_window_titles(AXWindowTitle* titles, int count);
+
 #endif

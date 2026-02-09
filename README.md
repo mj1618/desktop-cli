@@ -60,9 +60,15 @@ go install github.com/mj1618/desktop-cli@latest
 ```bash
 git clone https://github.com/mj1618/desktop-cli.git
 cd desktop-cli
-go build -o desktop-cli .
+go build -ldflags "-X github.com/mj1618/desktop-cli/internal/version.Commit=$(git rev-parse --short HEAD) -X github.com/mj1618/desktop-cli/internal/version.BuildDate=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" -o desktop-cli .
 codesign --force --sign - ./desktop-cli   # required on macOS Apple Silicon
 sudo mv desktop-cli /usr/local/bin/
+```
+
+Or use the update script which handles ldflags and build verification automatically:
+
+```bash
+./update.sh
 ```
 
 ## Usage
@@ -119,6 +125,22 @@ desktop-cli read --app "Safari" --roles "btn" --flat
 
 # Find a specific element by text as a flat result (most token-efficient)
 desktop-cli read --app "Safari" --text "Submit" --flat
+
+# Get only the currently focused element
+desktop-cli read --app "Safari" --focused
+
+# Get the focused element as a flat result with path breadcrumb
+desktop-cli read --app "Safari" --focused --flat
+
+# Get the focused element only if it matches a role filter
+desktop-cli read --app "Safari" --focused --roles "input"
+
+# Prune anonymous group/other elements that have no title/value/description
+# (dramatically reduces output size — 5-8x fewer elements for typical web pages)
+desktop-cli read --app "Chrome" --text "Subject" --flat --prune
+
+# Prune works with tree mode too (empty groups are removed, children promoted)
+desktop-cli read --app "Chrome" --depth 4 --prune
 ```
 
 ### Click an element
@@ -167,6 +189,64 @@ desktop-cli type --target "Address" --roles "input" --app "Safari" --text "https
 # Click an element by ID to focus it, then type into it
 desktop-cli type --id 4 --app "Safari" --text "search query"
 ```
+
+**Response format:** The `type` command returns information about the target or focused element, eliminating the need for a follow-up `read` call.
+
+When typing into a targeted element (`--target` or `--id`), the response includes a `target` field with the element's current state (including its updated value):
+
+```yaml
+ok: true
+action: type
+text: hello
+target:
+    i: 42
+    r: input
+    t: Subject
+    v: hello
+    b: [550, 792, 421, 20]
+```
+
+When typing without a target (bare `type --text`), the response includes a `focused` field showing which element received the input:
+
+```yaml
+ok: true
+action: type
+text: hello
+focused:
+    i: 42
+    r: input
+    t: Subject
+    v: hello
+    b: [550, 792, 421, 20]
+```
+
+For `--key` actions, the response includes the currently focused element after the key press:
+
+```yaml
+ok: true
+action: key
+key: tab
+focused:
+    i: 55
+    r: input
+    t: Message Body
+    b: [550, 830, 421, 200]
+```
+
+**Focus feedback for navigation keys:** When you press navigation keys (`tab`, `shift+tab`, `enter`, `escape`, arrow keys), the response automatically includes a `focused` field showing which element received focus:
+
+```yaml
+ok: true
+action: key
+key: tab
+focused:
+    i: 3463
+    r: input
+    d: Subject
+    b: [550, 792, 421, 20]
+```
+
+This eliminates the need for a separate `read` call to find where focus moved. If no element has focus after the key press, the `focused` field is omitted. Non-navigation keys (e.g. `cmd+c`) return only `ok`, `action`, and `key` as before.
 
 ### Scroll
 
@@ -255,6 +335,20 @@ desktop-cli action --id 15 --action pick --app "Safari"
 
 # Cancel a dialog or operation
 desktop-cli action --id 3 --action cancel --app "Safari"
+```
+
+**Response format:** The `action` command returns information about the target element:
+
+```yaml
+ok: true
+action: action
+id: 89
+name: press
+target:
+    i: 89
+    r: btn
+    t: Submit
+    b: [200, 400, 100, 32]
 ```
 
 ### Set element values
@@ -358,7 +452,11 @@ See `desktop-cli --help` and `desktop-cli <command> --help` for full usage detai
 ### Build
 
 ```bash
-go build -o desktop-cli .
+# Quick dev build (includes git commit and build date for traceability)
+./update.sh
+
+# Or manually:
+go build -ldflags "-X github.com/mj1618/desktop-cli/internal/version.Commit=$(git rev-parse --short HEAD) -X github.com/mj1618/desktop-cli/internal/version.BuildDate=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" -o desktop-cli .
 codesign --force --sign - ./desktop-cli   # required on macOS Apple Silicon
 ```
 

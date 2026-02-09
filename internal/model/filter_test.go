@@ -236,6 +236,275 @@ func TestFilterByText_PreservesIDs(t *testing.T) {
 	}
 }
 
+func TestFilterByFocused_NoFocused(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "btn", Title: "OK"},
+		{ID: 2, Role: "txt", Title: "Hello"},
+	}
+	result := FilterByFocused(elements)
+	if len(result) != 0 {
+		t.Errorf("expected 0 elements when nothing is focused, got %d", len(result))
+	}
+}
+
+func TestFilterByFocused_TopLevel(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "btn", Title: "OK"},
+		{ID: 2, Role: "input", Title: "Search", Focused: true},
+		{ID: 3, Role: "txt", Title: "Hello"},
+	}
+	result := FilterByFocused(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 focused element, got %d", len(result))
+	}
+	if result[0].ID != 2 {
+		t.Errorf("expected ID 2, got %d", result[0].ID)
+	}
+	if !result[0].Focused {
+		t.Error("expected Focused to be true")
+	}
+}
+
+func TestFilterByFocused_NestedChild(t *testing.T) {
+	elements := []Element{
+		{
+			ID: 1, Role: "window",
+			Children: []Element{
+				{
+					ID: 2, Role: "group",
+					Children: []Element{
+						{ID: 3, Role: "input", Title: "Subject", Focused: true},
+						{ID: 4, Role: "btn", Title: "Send"},
+					},
+				},
+			},
+		},
+	}
+	result := FilterByFocused(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 top-level element (ancestor preserved), got %d", len(result))
+	}
+	if result[0].ID != 1 {
+		t.Errorf("expected ancestor ID 1, got %d", result[0].ID)
+	}
+	if len(result[0].Children) != 1 {
+		t.Fatalf("expected 1 child, got %d", len(result[0].Children))
+	}
+	if result[0].Children[0].ID != 2 {
+		t.Errorf("expected child ID 2, got %d", result[0].Children[0].ID)
+	}
+	if len(result[0].Children[0].Children) != 1 {
+		t.Fatalf("expected 1 grandchild, got %d", len(result[0].Children[0].Children))
+	}
+	if result[0].Children[0].Children[0].ID != 3 {
+		t.Errorf("expected grandchild ID 3, got %d", result[0].Children[0].Children[0].ID)
+	}
+}
+
+func TestFilterByFocused_PreservesFields(t *testing.T) {
+	elements := []Element{
+		{ID: 5, Role: "input", Title: "Email", Value: "test@example.com", Focused: true, Bounds: [4]int{100, 200, 300, 20}},
+	}
+	result := FilterByFocused(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(result))
+	}
+	el := result[0]
+	if el.ID != 5 || el.Role != "input" || el.Title != "Email" || el.Value != "test@example.com" {
+		t.Errorf("fields not preserved: %+v", el)
+	}
+	if el.Bounds != [4]int{100, 200, 300, 20} {
+		t.Errorf("bounds not preserved: %v", el.Bounds)
+	}
+}
+
+func TestFilterByFocused_PrunesNonFocusedSiblings(t *testing.T) {
+	elements := []Element{
+		{
+			ID: 1, Role: "group",
+			Children: []Element{
+				{ID: 2, Role: "input", Title: "Name"},
+				{ID: 3, Role: "input", Title: "Email", Focused: true},
+				{ID: 4, Role: "btn", Title: "Submit"},
+			},
+		},
+	}
+	result := FilterByFocused(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(result))
+	}
+	if len(result[0].Children) != 1 {
+		t.Fatalf("expected 1 child (only focused), got %d", len(result[0].Children))
+	}
+	if result[0].Children[0].ID != 3 {
+		t.Errorf("expected focused child ID 3, got %d", result[0].Children[0].ID)
+	}
+}
+
+// --- PruneEmptyGroups (tree mode) tests ---
+
+func TestPruneEmptyGroups_RemovesAnonymousGroups(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "group", Bounds: [4]int{0, 0, 100, 100}}, // empty group — should be removed
+		{ID: 2, Role: "btn", Title: "Submit", Bounds: [4]int{10, 10, 80, 30}},
+	}
+	result := PruneEmptyGroups(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(result))
+	}
+	if result[0].ID != 2 {
+		t.Errorf("expected ID 2 (btn), got %d", result[0].ID)
+	}
+}
+
+func TestPruneEmptyGroups_KeepsGroupsWithTitle(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "group", Title: "Form Section", Bounds: [4]int{0, 0, 100, 100}},
+		{ID: 2, Role: "group", Value: "selected", Bounds: [4]int{0, 0, 100, 100}},
+		{ID: 3, Role: "group", Description: "Navigation panel", Bounds: [4]int{0, 0, 100, 100}},
+	}
+	result := PruneEmptyGroups(elements)
+	if len(result) != 3 {
+		t.Errorf("expected 3 elements (all groups have text), got %d", len(result))
+	}
+}
+
+func TestPruneEmptyGroups_PromotesChildren(t *testing.T) {
+	elements := []Element{
+		{
+			ID: 1, Role: "group", Bounds: [4]int{0, 0, 200, 200}, // empty, should be removed
+			Children: []Element{
+				{ID: 2, Role: "btn", Title: "Submit", Bounds: [4]int{10, 10, 80, 30}},
+				{ID: 3, Role: "btn", Title: "Cancel", Bounds: [4]int{10, 50, 80, 30}},
+			},
+		},
+	}
+	result := PruneEmptyGroups(elements)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 promoted children, got %d", len(result))
+	}
+	if result[0].Title != "Submit" || result[1].Title != "Cancel" {
+		t.Errorf("unexpected titles: %q, %q", result[0].Title, result[1].Title)
+	}
+}
+
+func TestPruneEmptyGroups_NestedEmptyGroups(t *testing.T) {
+	// Deeply nested empty groups should all be collapsed
+	elements := []Element{
+		{
+			ID: 1, Role: "window", Title: "Main",
+			Children: []Element{
+				{
+					ID: 2, Role: "group", // empty
+					Children: []Element{
+						{
+							ID: 3, Role: "group", // empty
+							Children: []Element{
+								{
+									ID: 4, Role: "group", // empty
+									Children: []Element{
+										{ID: 5, Role: "input", Description: "Subject", Bounds: [4]int{10, 10, 200, 20}},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	result := PruneEmptyGroups(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 top-level element, got %d", len(result))
+	}
+	if result[0].Role != "window" {
+		t.Errorf("expected window, got %s", result[0].Role)
+	}
+	// All three empty groups should be collapsed, leaving input as direct child of window
+	if len(result[0].Children) != 1 {
+		t.Fatalf("expected 1 child of window, got %d", len(result[0].Children))
+	}
+	if result[0].Children[0].Role != "input" {
+		t.Errorf("expected input as child of window, got %s", result[0].Children[0].Role)
+	}
+}
+
+func TestPruneEmptyGroups_RemovesOtherRole(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "other", Bounds: [4]int{0, 0, 100, 100}}, // empty "other" — should be removed
+		{ID: 2, Role: "btn", Title: "OK", Bounds: [4]int{10, 10, 80, 30}},
+	}
+	result := PruneEmptyGroups(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(result))
+	}
+	if result[0].ID != 2 {
+		t.Errorf("expected ID 2, got %d", result[0].ID)
+	}
+}
+
+func TestPruneEmptyGroups_PreservesNonGroupRoles(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "toolbar", Bounds: [4]int{0, 0, 200, 50}},   // not group/other — keep
+		{ID: 2, Role: "scroll", Bounds: [4]int{0, 50, 200, 300}},  // not group/other — keep
+		{ID: 3, Role: "web", Bounds: [4]int{0, 0, 200, 200}},      // not group/other — keep
+	}
+	result := PruneEmptyGroups(elements)
+	if len(result) != 3 {
+		t.Errorf("expected 3 elements (non-group roles preserved), got %d", len(result))
+	}
+}
+
+func TestPruneEmptyGroups_NilInput(t *testing.T) {
+	result := PruneEmptyGroups(nil)
+	if len(result) != 0 {
+		t.Errorf("expected 0 elements for nil input, got %d", len(result))
+	}
+}
+
+// --- PruneEmptyGroupsFlat tests ---
+
+func TestPruneEmptyGroupsFlat_Basic(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "group", Path: "window > group"},
+		{ID: 2, Role: "group", Path: "window > group > group"},
+		{ID: 3, Role: "input", Description: "Subject", Path: "window > group > group > input"},
+	}
+	result := PruneEmptyGroupsFlat(elements)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 element, got %d", len(result))
+	}
+	if result[0].ID != 3 {
+		t.Errorf("expected ID 3, got %d", result[0].ID)
+	}
+	// Path should be preserved from original
+	if result[0].Path != "window > group > group > input" {
+		t.Errorf("expected original path preserved, got %q", result[0].Path)
+	}
+}
+
+func TestPruneEmptyGroupsFlat_KeepsGroupsWithText(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "group", Title: "Navigation", Path: "window > group"},
+		{ID: 2, Role: "group", Path: "window > group > group"}, // empty — removed
+		{ID: 3, Role: "btn", Title: "Back", Path: "window > group > group > btn"},
+	}
+	result := PruneEmptyGroupsFlat(elements)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 elements, got %d", len(result))
+	}
+	if result[0].ID != 1 || result[1].ID != 3 {
+		t.Errorf("unexpected IDs: %d, %d", result[0].ID, result[1].ID)
+	}
+}
+
+func TestPruneEmptyGroupsFlat_NilInput(t *testing.T) {
+	result := PruneEmptyGroupsFlat(nil)
+	if len(result) != 0 {
+		t.Errorf("expected 0 elements for nil input, got %d", len(result))
+	}
+}
+
 func TestBoundsIntersect(t *testing.T) {
 	tests := []struct {
 		name string

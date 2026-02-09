@@ -12,10 +12,12 @@ import (
 
 // TypeResult is the YAML output of a successful type command.
 type TypeResult struct {
-	OK     bool   `yaml:"ok"             json:"ok"`
-	Action string `yaml:"action"         json:"action"`
-	Text   string `yaml:"text,omitempty" json:"text,omitempty"`
-	Key    string `yaml:"key,omitempty"  json:"key,omitempty"`
+	OK      bool         `yaml:"ok"                json:"ok"`
+	Action  string       `yaml:"action"            json:"action"`
+	Text    string       `yaml:"text,omitempty"    json:"text,omitempty"`
+	Key     string       `yaml:"key,omitempty"     json:"key,omitempty"`
+	Target  *ElementInfo `yaml:"target,omitempty"  json:"target,omitempty"`
+	Focused *ElementInfo `yaml:"focused,omitempty" json:"focused,omitempty"`
 }
 
 var typeCmd = &cobra.Command{
@@ -65,6 +67,9 @@ func runType(cmd *cobra.Command, args []string) error {
 	target, roles := getTextTargetingFlags(cmd, "target")
 	hasTarget := target != ""
 
+	// Track the targeted element ID for post-action re-read
+	targetID := 0
+
 	// If --target or --id specified, click the element first to focus it
 	if hasTarget {
 		if appName == "" && window == "" {
@@ -74,6 +79,7 @@ func runType(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
+		targetID = elem.ID
 		cx := elem.Bounds[0] + elem.Bounds[2]/2
 		cy := elem.Bounds[1] + elem.Bounds[3]/2
 		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
@@ -98,6 +104,7 @@ func runType(cmd *cobra.Command, args []string) error {
 		if elem == nil {
 			return fmt.Errorf("element with id %d not found", id)
 		}
+		targetID = elem.ID
 		cx := elem.Bounds[0] + elem.Bounds[2]/2
 		cy := elem.Bounds[1] + elem.Bounds[3]/2
 		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
@@ -111,19 +118,39 @@ func runType(cmd *cobra.Command, args []string) error {
 		if err := provider.Inputter.KeyCombo(keys); err != nil {
 			return err
 		}
-		return output.Print(TypeResult{
+
+		result := TypeResult{
 			OK:     true,
 			Action: "key",
 			Key:    key,
-		})
+		}
+
+		// Read back the element that now has focus after the key press
+		time.Sleep(80 * time.Millisecond)
+		result.Focused = readFocusedElement(provider, appName, window, 0, 0)
+
+		return output.Print(result)
 	}
 
 	if err := provider.Inputter.TypeText(text, delayMs); err != nil {
 		return err
 	}
-	return output.Print(TypeResult{
+
+	result := TypeResult{
 		OK:     true,
 		Action: "type",
 		Text:   text,
-	})
+	}
+
+	// Include target element info after typing
+	time.Sleep(50 * time.Millisecond)
+	if targetID > 0 {
+		// Re-read the targeted element to get its current value
+		result.Target = readElementByID(provider, appName, window, 0, 0, targetID)
+	} else {
+		// No explicit target — report the focused element that received input
+		result.Focused = readFocusedElement(provider, appName, window, 0, 0)
+	}
+
+	return output.Print(result)
 }
