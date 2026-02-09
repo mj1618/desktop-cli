@@ -1,35 +1,36 @@
 package model
 
 import (
-	"encoding/json"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-func TestElement_JSONKeys(t *testing.T) {
+func TestElement_YAMLKeys(t *testing.T) {
 	el := Element{
 		ID:     1,
 		Role:   "btn",
 		Title:  "OK",
 		Bounds: [4]int{10, 20, 100, 30},
 	}
-	data, err := json.Marshal(el)
+	data, err := yaml.Marshal(el)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
 	// Must have compact keys
 	for _, key := range []string{"i", "r", "t", "b"} {
 		if _, ok := m[key]; !ok {
-			t.Errorf("expected key %q in JSON output", key)
+			t.Errorf("expected key %q in YAML output", key)
 		}
 	}
 	// Must NOT have verbose keys
 	for _, key := range []string{"id", "role", "title", "bounds"} {
 		if _, ok := m[key]; ok {
-			t.Errorf("unexpected verbose key %q in JSON output", key)
+			t.Errorf("unexpected verbose key %q in YAML output", key)
 		}
 	}
 }
@@ -40,12 +41,12 @@ func TestElement_OmitEmpty(t *testing.T) {
 		Role:   "btn",
 		Bounds: [4]int{0, 0, 100, 30},
 	}
-	data, err := json.Marshal(el)
+	data, err := yaml.Marshal(el)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
 	// Empty title should be omitted
@@ -90,17 +91,17 @@ func TestElement_EnabledFalse_Included(t *testing.T) {
 		Bounds:  [4]int{0, 0, 100, 30},
 		Enabled: &f,
 	}
-	data, err := json.Marshal(el)
+	data, err := yaml.Marshal(el)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
 	val, ok := m["e"]
 	if !ok {
-		t.Fatal("enabled=false should be included in JSON")
+		t.Fatal("enabled=false should be included in YAML")
 	}
 	if val != false {
 		t.Errorf("expected enabled=false, got %v", val)
@@ -115,12 +116,12 @@ func TestElement_EnabledTrue_Omitted(t *testing.T) {
 		Bounds:  [4]int{0, 0, 100, 30},
 		Enabled: &tr,
 	}
-	data, err := json.Marshal(el)
+	data, err := yaml.Marshal(el)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
 	// *bool with omitempty: true is NOT the zero value, so it will be included.
@@ -140,12 +141,12 @@ func TestElement_WithChildren(t *testing.T) {
 			{ID: 2, Role: "btn", Title: "Back", Bounds: [4]int{10, 10, 32, 32}},
 		},
 	}
-	data, err := json.Marshal(el)
+	data, err := yaml.Marshal(el)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
 	children, ok := m["c"]
@@ -175,12 +176,12 @@ func TestElement_RoundTrip(t *testing.T) {
 			{ID: 2, Role: "txt", Title: "Placeholder", Bounds: [4]int{105, 205, 290, 30}},
 		},
 	}
-	data, err := json.Marshal(original)
+	data, err := yaml.Marshal(original)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded Element
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	if err := yaml.Unmarshal(data, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if decoded.ID != original.ID {

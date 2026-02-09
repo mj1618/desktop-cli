@@ -24,7 +24,7 @@ func init() {
 	rootCmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)", version.Version, version.Commit, version.BuildDate)
 }
 
-// notImplemented returns a RunE function that outputs a JSON error for stub commands.
+// notImplemented returns a RunE function that outputs an error for stub commands.
 func notImplemented(name string) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command not yet implemented: %s", name)

@@ -46,34 +46,6 @@ tasks:
 
     depends_on: [planner]
 
-  refactor:
-    prompt-string: |
-      # Review unstaged git changes for refactoring opportunities
-
-      Run `git diff` to see all unstaged changes in the repository.
-
-      # Analyze the changes
-
-      Look through the diff output and identify refactoring opportunities such as:
-      - Code duplication that could be extracted into shared functions/components
-      - Overly complex functions that should be broken down
-      - Poor naming that could be clarified
-      - Missing type safety or loose typing
-      - Dead code or unused imports introduced by the changes
-      - Inconsistent patterns compared to the rest of the codebase
-
-      # Apply refactors
-
-      If you find refactoring opportunities, apply them directly to the code.
-      Keep changes minimal and focused — don't refactor code outside of what was touched by the unstaged changes.
-      Make sure the code still compiles and any relevant tests still pass after your refactors.
-
-      # If nothing to refactor
-
-      If the unstaged changes look clean, exit immediately.
-
-    depends_on: [coder]
-
   checker:
     prompt-string: |
       # Review unstaged git changes for bugs
@@ -102,41 +74,21 @@ tasks:
 
       If the unstaged changes look correct, exit immediately.
 
-    depends_on: [refactor]
-
-  tester:
-    prompt-string: |
-      # Run final tests
-
-      Run the full test suite to make sure everything passes:
-      - Run `npm test` (or the appropriate test command for this project)
-      - Run `npm run build` to verify the project compiles cleanly
-      - If there are linting scripts configured, run those too
-
-      # Fix any failures
-
-      If any tests fail or the build breaks:
-      - Read the error output carefully
-      - Fix the issues directly in the code
-      - Re-run the failing tests to confirm the fix
-      - Repeat until everything passes
-
-      # Push to git
-
-      Once all tests pass and the build is clean:
-      - Run `git add -A` to stage all changes
-      - Run `git diff --cached --stat` to review what will be committed
-      - Write a concise, descriptive commit message summarizing the changes made in this iteration
-      - Run `git commit` with that message
-      - Run `git push` to push the commit to the remote
-
-      # If nothing to push
-
-      If there are no unstaged or staged changes (nothing was modified in this iteration), exit immediately.
-
-    depends_on: [checker]
+    depends_on: [coder]
 
 pipelines:
   development:
     iterations: 30
-    tasks: [planner, coder, refactor, checker, tester]
+    tasks: [planner, coder, checker]
+
+  development2:
+    iterations: 30
+    tasks: [planner, coder, checker]
+
+  development3:
+    iterations: 30
+    tasks: [planner, coder, checker]
+
+  development4:
+    iterations: 30
+    tasks: [planner, coder, checker]

@@ -2,10 +2,10 @@ package model
 
 // Window represents an application window.
 type Window struct {
-	App     string `json:"app"`
-	PID     int    `json:"pid"`
-	Title   string `json:"title"`
-	ID      int    `json:"id"`
-	Bounds  [4]int `json:"bounds"`
-	Focused bool   `json:"focused,omitempty"`
+	App     string `yaml:"app"`
+	PID     int    `yaml:"pid"`
+	Title   string `yaml:"title"`
+	ID      int    `yaml:"id"`
+	Bounds  [4]int `yaml:"bounds"`
+	Focused bool   `yaml:"focused,omitempty"`
 }

@@ -2,14 +2,14 @@ package output
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"testing"
 
 	"github.com/mj1618/desktop-cli/internal/model"
+	"gopkg.in/yaml.v3"
 )
 
-func TestPrintJSON_Compact(t *testing.T) {
+func TestPrintYAML(t *testing.T) {
 	result := ReadResult{
 		App:    "Safari",
 		PID:    1234,
@@ -25,7 +25,7 @@ func TestPrintJSON_Compact(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	err := PrintJSON(result, false)
+	err := PrintYAML(result)
 	w.Close()
 	os.Stdout = old
 
@@ -37,15 +37,15 @@ func TestPrintJSON_Compact(t *testing.T) {
 	buf.ReadFrom(r)
 	output := buf.String()
 
-	// Compact output should be a single line (plus newline from Encode)
-	if bytes.Count([]byte(output), []byte("\n")) > 1 {
-		t.Errorf("compact output should be single line, got:\n%s", output)
+	// YAML output should be multi-line
+	if bytes.Count([]byte(output), []byte("\n")) <= 1 {
+		t.Errorf("YAML output should be multi-line, got:\n%s", output)
 	}
 
-	// Verify it's valid JSON
+	// Verify it's valid YAML
 	var decoded ReadResult
-	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
+	if err := yaml.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatalf("output is not valid YAML: %v", err)
 	}
 	if decoded.App != "Safari" {
 		t.Errorf("app: got %q, want %q", decoded.App, "Safari")
@@ -55,54 +55,17 @@ func TestPrintJSON_Compact(t *testing.T) {
 	}
 }
 
-func TestPrintJSON_Pretty(t *testing.T) {
-	result := ReadResult{
-		App: "Test",
-		TS:  123,
-		Elements: []model.Element{
-			{ID: 1, Role: "btn", Bounds: [4]int{0, 0, 10, 10}},
-		},
-	}
-
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	err := PrintJSON(result, true)
-	w.Close()
-	os.Stdout = old
-
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	output := buf.String()
-
-	// Pretty output should have multiple lines
-	if bytes.Count([]byte(output), []byte("\n")) <= 1 {
-		t.Errorf("pretty output should be multi-line, got:\n%s", output)
-	}
-
-	// Verify it's valid JSON
-	var decoded ReadResult
-	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-}
-
 func TestReadResult_OmitEmpty(t *testing.T) {
 	result := ReadResult{
 		TS:       123,
 		Elements: []model.Element{},
 	}
-	data, err := json.Marshal(result)
+	data, err := yaml.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := yaml.Unmarshal(data, &m); err != nil {
 		t.Fatal(err)
 	}
 	// App, PID, Window should be omitted when empty/zero

@@ -26,3 +26,17 @@ type WindowManager interface {
 	FocusWindow(opts FocusOptions) error
 	GetFrontmostApp() (string, int, error)
 }
+
+// Screenshotter captures screenshots.
+type Screenshotter interface {
+	// CaptureWindow captures a screenshot of a specific window or the full screen.
+	// Returns the image bytes in the requested format.
+	CaptureWindow(opts ScreenshotOptions) ([]byte, error)
+}
+
+// ActionPerformer performs accessibility actions directly on UI elements.
+type ActionPerformer interface {
+	// PerformAction executes an accessibility action on an element identified
+	// by its sequential ID within the given read scope.
+	PerformAction(opts ActionOptions) error
+}
