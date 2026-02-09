@@ -60,7 +60,10 @@ func runClick(cmd *cobra.Command, args []string) error {
 		count = 2
 	}
 
-	if id > 0 {
+	hasCoords := cmd.Flags().Changed("x") || cmd.Flags().Changed("y")
+	hasID := cmd.Flags().Changed("id")
+
+	if hasID {
 		// Element ID mode: re-read the element tree and find the element
 		if appName == "" && window == "" {
 			return fmt.Errorf("--id requires --app or --window to scope the element lookup")
@@ -86,7 +89,7 @@ func runClick(cmd *cobra.Command, args []string) error {
 		// Compute center of bounding box
 		x = elem.Bounds[0] + elem.Bounds[2]/2
 		y = elem.Bounds[1] + elem.Bounds[3]/2
-	} else if x == 0 && y == 0 {
+	} else if !hasCoords {
 		return fmt.Errorf("specify --id or --x/--y coordinates")
 	}
 

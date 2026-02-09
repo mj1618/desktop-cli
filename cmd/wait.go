@@ -69,6 +69,10 @@ func runWait(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("specify at least one condition: --for-text, --for-role, or --for-id")
 	}
 
+	if appName == "" && window == "" && pid == 0 && windowID == 0 {
+		return fmt.Errorf("specify a target: --app, --pid, --window, or --window-id")
+	}
+
 	var roles []string
 	if rolesStr != "" {
 		for _, r := range strings.Split(rolesStr, ",") {

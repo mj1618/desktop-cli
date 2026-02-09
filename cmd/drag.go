@@ -55,8 +55,16 @@ func runDrag(cmd *cobra.Command, args []string) error {
 	appName, _ := cmd.Flags().GetString("app")
 	window, _ := cmd.Flags().GetString("window")
 
+	hasCoords := cmd.Flags().Changed("from-x") || cmd.Flags().Changed("from-y") ||
+		cmd.Flags().Changed("to-x") || cmd.Flags().Changed("to-y")
+	hasIDs := cmd.Flags().Changed("from-id") || cmd.Flags().Changed("to-id")
+
+	if !hasCoords && !hasIDs {
+		return fmt.Errorf("specify --from-x/--from-y and --to-x/--to-y or --from-id/--to-id")
+	}
+
 	// Resolve element IDs to coordinates if specified
-	if fromID > 0 || toID > 0 {
+	if hasIDs {
 		if appName == "" && window == "" {
 			return fmt.Errorf("--from-id/--to-id requires --app or --window to scope the element lookup")
 		}
@@ -88,11 +96,6 @@ func runDrag(cmd *cobra.Command, args []string) error {
 			toX = elem.Bounds[0] + elem.Bounds[2]/2
 			toY = elem.Bounds[1] + elem.Bounds[3]/2
 		}
-	}
-
-	// Validate that we have coordinates
-	if fromX == 0 && fromY == 0 && toX == 0 && toY == 0 {
-		return fmt.Errorf("specify --from-x/--from-y and --to-x/--to-y or --from-id/--to-id")
 	}
 
 	if err := provider.Inputter.Drag(fromX, fromY, toX, toY); err != nil {

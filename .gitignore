@@ -1,4 +1,6 @@
 # Binaries
+./update.sh
+
 desktop-cli
 *.exe
 *.exe~
