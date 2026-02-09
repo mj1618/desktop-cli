@@ -64,28 +64,53 @@ static int cg_move_mouse(float x, float y) {
     return 0;
 }
 
+// Lazily-initialised event source for keyboard events.
+static CGEventSourceRef _kbSource = NULL;
+static CGEventSourceRef get_kb_source() {
+    if (_kbSource == NULL) {
+        _kbSource = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    }
+    return _kbSource;
+}
+
 // Type a single Unicode character using CGEvent key simulation.
-static void cg_type_char(UniChar ch) {
-    CGEventRef keyDown = CGEventCreateKeyboardEvent(NULL, 0, true);
-    CGEventRef keyUp = CGEventCreateKeyboardEvent(NULL, 0, false);
+static int cg_type_char(UniChar ch) {
+    CGEventSourceRef src = get_kb_source();
+    CGEventRef keyDown = CGEventCreateKeyboardEvent(src, 0, true);
+    CGEventRef keyUp   = CGEventCreateKeyboardEvent(src, 0, false);
+    if (!keyDown || !keyUp) {
+        if (keyDown) CFRelease(keyDown);
+        if (keyUp)   CFRelease(keyUp);
+        return -1;
+    }
     CGEventKeyboardSetUnicodeString(keyDown, 1, &ch);
     CGEventKeyboardSetUnicodeString(keyUp, 1, &ch);
     CGEventPost(kCGHIDEventTap, keyDown);
+    usleep(1000); // 1 ms between key-down and key-up
     CGEventPost(kCGHIDEventTap, keyUp);
     CFRelease(keyDown);
     CFRelease(keyUp);
+    return 0;
 }
 
 // Press a key combo with modifiers.
-static void cg_key_combo(CGKeyCode keyCode, CGEventFlags modifiers) {
-    CGEventRef keyDown = CGEventCreateKeyboardEvent(NULL, keyCode, true);
-    CGEventRef keyUp = CGEventCreateKeyboardEvent(NULL, keyCode, false);
+static int cg_key_combo(CGKeyCode keyCode, CGEventFlags modifiers) {
+    CGEventSourceRef src = get_kb_source();
+    CGEventRef keyDown = CGEventCreateKeyboardEvent(src, keyCode, true);
+    CGEventRef keyUp = CGEventCreateKeyboardEvent(src, keyCode, false);
+    if (!keyDown || !keyUp) {
+        if (keyDown) CFRelease(keyDown);
+        if (keyUp)   CFRelease(keyUp);
+        return -1;
+    }
     CGEventSetFlags(keyDown, modifiers);
     CGEventSetFlags(keyUp, modifiers);
     CGEventPost(kCGHIDEventTap, keyDown);
+    usleep(1000); // 1 ms between key-down and key-up
     CGEventPost(kCGHIDEventTap, keyUp);
     CFRelease(keyDown);
     CFRelease(keyUp);
+    return 0;
 }
 
 // Scroll using CGEventCreateScrollWheelEvent.
@@ -232,11 +257,15 @@ func (inp *DarwinInputter) Drag(fromX, fromY, toX, toY int) error {
 }
 
 func (inp *DarwinInputter) TypeText(text string, delayMs int) error {
+	// Minimum inter-character delay to prevent event loss.
+	if delayMs < 5 {
+		delayMs = 5
+	}
 	for _, ch := range text {
-		C.cg_type_char(C.UniChar(ch))
-		if delayMs > 0 {
-			time.Sleep(time.Duration(delayMs) * time.Millisecond)
+		if C.cg_type_char(C.UniChar(ch)) != 0 {
+			return fmt.Errorf("failed to type character %q", string(ch))
 		}
+		time.Sleep(time.Duration(delayMs) * time.Millisecond)
 	}
 	return nil
 }
@@ -246,7 +275,9 @@ func (inp *DarwinInputter) KeyCombo(keys []string) error {
 	if err != nil {
 		return err
 	}
-	C.cg_key_combo(C.CGKeyCode(keyCode), C.CGEventFlags(modifiers))
+	if C.cg_key_combo(C.CGKeyCode(keyCode), C.CGEventFlags(modifiers)) != 0 {
+		return fmt.Errorf("failed to post key combo")
+	}
 	return nil
 }
 

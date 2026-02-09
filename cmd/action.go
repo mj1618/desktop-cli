@@ -38,13 +38,13 @@ action directly on the element, which works even for off-screen or occluded elem
 
 func init() {
 	rootCmd.AddCommand(actionCmd)
-	actionCmd.Flags().Int("id", 0, "Element ID from read output (required)")
+	actionCmd.Flags().Int("id", 0, "Element ID from read output")
 	actionCmd.Flags().String("action", "press", "Action to perform (default: press)")
 	actionCmd.Flags().String("app", "", "Scope to application")
 	actionCmd.Flags().String("window", "", "Scope to window")
 	actionCmd.Flags().Int("window-id", 0, "Scope to window by system ID")
 	actionCmd.Flags().Int("pid", 0, "Scope to process by PID")
-	_ = actionCmd.MarkFlagRequired("id")
+	addTextTargetingFlags(actionCmd, "text", "Find element by text and perform action (case-insensitive match on title/value/description)")
 }
 
 func runAction(cmd *cobra.Command, args []string) error {
@@ -62,9 +62,26 @@ func runAction(cmd *cobra.Command, args []string) error {
 	window, _ := cmd.Flags().GetString("window")
 	windowID, _ := cmd.Flags().GetInt("window-id")
 	pid, _ := cmd.Flags().GetInt("pid")
+	text, roles := getTextTargetingFlags(cmd, "text")
 
-	if appName == "" && window == "" && windowID == 0 && pid == 0 {
-		return fmt.Errorf("--id requires --app, --window, --window-id, or --pid to scope the element lookup")
+	hasID := cmd.Flags().Changed("id")
+	hasText := text != ""
+
+	if !hasID && !hasText {
+		return fmt.Errorf("specify --id or --text to target an element")
+	}
+
+	if err := requireScope(appName, window, windowID, pid); err != nil {
+		return err
+	}
+
+	// Resolve text to element ID if needed
+	if hasText && !hasID {
+		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles)
+		if err != nil {
+			return err
+		}
+		id = elem.ID
 	}
 
 	opts := platform.ActionOptions{

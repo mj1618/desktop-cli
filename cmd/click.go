@@ -32,8 +32,9 @@ func init() {
 	clickCmd.Flags().Int("y", 0, "Click at absolute Y screen coordinate")
 	clickCmd.Flags().String("button", "left", "Mouse button: left, right, middle")
 	clickCmd.Flags().Bool("double", false, "Double-click")
-	clickCmd.Flags().String("app", "", "Scope to application (used with --id)")
-	clickCmd.Flags().String("window", "", "Scope to window (used with --id)")
+	clickCmd.Flags().String("app", "", "Scope to application (used with --id or --text)")
+	clickCmd.Flags().String("window", "", "Scope to window (used with --id or --text)")
+	addTextTargetingFlags(clickCmd, "text", "Find and click element by text (case-insensitive match on title/value/description)")
 }
 
 func runClick(cmd *cobra.Command, args []string) error {
@@ -62,8 +63,21 @@ func runClick(cmd *cobra.Command, args []string) error {
 
 	hasCoords := cmd.Flags().Changed("x") || cmd.Flags().Changed("y")
 	hasID := cmd.Flags().Changed("id")
+	text, roles := getTextTargetingFlags(cmd, "text")
+	hasText := text != ""
 
-	if hasID {
+	if hasText {
+		// Text targeting mode: find element by text content
+		if appName == "" && window == "" {
+			return fmt.Errorf("--text requires --app or --window to scope the element lookup")
+		}
+		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, text, roles)
+		if err != nil {
+			return err
+		}
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if hasID {
 		// Element ID mode: re-read the element tree and find the element
 		if appName == "" && window == "" {
 			return fmt.Errorf("--id requires --app or --window to scope the element lookup")
@@ -90,7 +104,7 @@ func runClick(cmd *cobra.Command, args []string) error {
 		x = elem.Bounds[0] + elem.Bounds[2]/2
 		y = elem.Bounds[1] + elem.Bounds[3]/2
 	} else if !hasCoords {
-		return fmt.Errorf("specify --id or --x/--y coordinates")
+		return fmt.Errorf("specify --text, --id, or --x/--y coordinates")
 	}
 
 	if provider.Inputter == nil {

@@ -2,6 +2,8 @@
 
 A GoLang CLI that lets AI agents read and interact with desktop UI elements. Agents get a structured JSON snapshot of any window's UI tree, then issue commands to click elements and type text — all from the terminal.
 
+The key thing here is to make it as EASY as possible for them to navigate the desktop. All features should be oriented around helping agents become FASTER at navigating a desktop environment.
+
 ## Problem Statement
 
 Agents need to automate desktop tasks but lack a fast, structured way to:

@@ -33,6 +33,9 @@ func init() {
 	dragCmd.Flags().Int("to-y", 0, "End Y coordinate")
 	dragCmd.Flags().Int("from-id", 0, "Start element (center)")
 	dragCmd.Flags().Int("to-id", 0, "End element (center)")
+	dragCmd.Flags().String("from-text", "", "Find start element by text (case-insensitive match)")
+	dragCmd.Flags().String("to-text", "", "Find end element by text (case-insensitive match)")
+	dragCmd.Flags().String("roles", "", "Filter by role when using text targeting (e.g. \"btn\", \"btn,lnk\")")
 	dragCmd.Flags().String("app", "", "Scope to application")
 	dragCmd.Flags().String("window", "", "Scope to window")
 }
@@ -52,15 +55,42 @@ func runDrag(cmd *cobra.Command, args []string) error {
 	toY, _ := cmd.Flags().GetInt("to-y")
 	fromID, _ := cmd.Flags().GetInt("from-id")
 	toID, _ := cmd.Flags().GetInt("to-id")
+	fromText, _ := cmd.Flags().GetString("from-text")
+	toText, _ := cmd.Flags().GetString("to-text")
+	roles, _ := cmd.Flags().GetString("roles")
 	appName, _ := cmd.Flags().GetString("app")
 	window, _ := cmd.Flags().GetString("window")
 
 	hasCoords := cmd.Flags().Changed("from-x") || cmd.Flags().Changed("from-y") ||
 		cmd.Flags().Changed("to-x") || cmd.Flags().Changed("to-y")
 	hasIDs := cmd.Flags().Changed("from-id") || cmd.Flags().Changed("to-id")
+	hasText := fromText != "" || toText != ""
 
-	if !hasCoords && !hasIDs {
-		return fmt.Errorf("specify --from-x/--from-y and --to-x/--to-y or --from-id/--to-id")
+	if !hasCoords && !hasIDs && !hasText {
+		return fmt.Errorf("specify --from-x/--from-y and --to-x/--to-y, --from-id/--to-id, or --from-text/--to-text")
+	}
+
+	// Resolve text targets to coordinates
+	if hasText {
+		if appName == "" && window == "" {
+			return fmt.Errorf("--from-text/--to-text requires --app or --window to scope the element lookup")
+		}
+		if fromText != "" {
+			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, fromText, roles)
+			if err != nil {
+				return fmt.Errorf("from-element: %w", err)
+			}
+			fromX = elem.Bounds[0] + elem.Bounds[2]/2
+			fromY = elem.Bounds[1] + elem.Bounds[3]/2
+		}
+		if toText != "" {
+			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, toText, roles)
+			if err != nil {
+				return fmt.Errorf("to-element: %w", err)
+			}
+			toX = elem.Bounds[0] + elem.Bounds[2]/2
+			toY = elem.Bounds[1] + elem.Bounds[3]/2
+		}
 	}
 
 	// Resolve element IDs to coordinates if specified

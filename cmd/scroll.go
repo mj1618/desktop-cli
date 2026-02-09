@@ -35,6 +35,7 @@ func init() {
 	scrollCmd.Flags().Int("id", 0, "Scroll within element by ID")
 	scrollCmd.Flags().String("app", "", "Scope to application")
 	scrollCmd.Flags().String("window", "", "Scope to window")
+	addTextTargetingFlags(scrollCmd, "text", "Find element by text and scroll within it (case-insensitive match on title/value/description)")
 }
 
 func runScroll(cmd *cobra.Command, args []string) error {
@@ -73,8 +74,22 @@ func runScroll(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid direction %q: use up, down, left, or right", direction)
 	}
 
-	// If --id specified, resolve element center coordinates
-	if id > 0 {
+	text, roles := getTextTargetingFlags(cmd, "text")
+	hasText := text != ""
+
+	// If --text specified, resolve element by text content
+	if hasText {
+		if appName == "" && window == "" {
+			return fmt.Errorf("--text requires --app or --window to scope the element lookup")
+		}
+		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, text, roles)
+		if err != nil {
+			return err
+		}
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if id > 0 {
+		// If --id specified, resolve element center coordinates
 		if appName == "" && window == "" {
 			return fmt.Errorf("--id requires --app or --window to scope the element lookup")
 		}

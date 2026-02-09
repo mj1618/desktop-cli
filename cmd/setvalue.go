@@ -40,14 +40,14 @@ via the accessibility API, which is faster and more reliable.`,
 
 func init() {
 	rootCmd.AddCommand(setValueCmd)
-	setValueCmd.Flags().Int("id", 0, "Element ID from read output (required)")
+	setValueCmd.Flags().Int("id", 0, "Element ID from read output")
 	setValueCmd.Flags().String("value", "", "Value to set (required)")
 	setValueCmd.Flags().String("attribute", "value", "Attribute to set: value (default), selected, focused")
 	setValueCmd.Flags().String("app", "", "Scope to application")
 	setValueCmd.Flags().String("window", "", "Scope to window")
 	setValueCmd.Flags().Int("window-id", 0, "Scope to window by system ID")
 	setValueCmd.Flags().Int("pid", 0, "Scope to process by PID")
-	_ = setValueCmd.MarkFlagRequired("id")
+	addTextTargetingFlags(setValueCmd, "text", "Find element by text and set its value (case-insensitive match on title/value/description)")
 }
 
 func runSetValue(cmd *cobra.Command, args []string) error {
@@ -66,9 +66,26 @@ func runSetValue(cmd *cobra.Command, args []string) error {
 	window, _ := cmd.Flags().GetString("window")
 	windowID, _ := cmd.Flags().GetInt("window-id")
 	pid, _ := cmd.Flags().GetInt("pid")
+	text, roles := getTextTargetingFlags(cmd, "text")
 
-	if appName == "" && window == "" && windowID == 0 && pid == 0 {
-		return fmt.Errorf("--app, --window, --window-id, or --pid is required to scope the element lookup")
+	hasID := cmd.Flags().Changed("id")
+	hasText := text != ""
+
+	if !hasID && !hasText {
+		return fmt.Errorf("specify --id or --text to target an element")
+	}
+
+	if err := requireScope(appName, window, windowID, pid); err != nil {
+		return err
+	}
+
+	// Resolve text to element ID if needed
+	if hasText && !hasID {
+		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles)
+		if err != nil {
+			return err
+		}
+		id = elem.ID
 	}
 
 	opts := platform.SetValueOptions{

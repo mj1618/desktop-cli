@@ -61,6 +61,7 @@ go install github.com/mj1618/desktop-cli@latest
 git clone https://github.com/mj1618/desktop-cli.git
 cd desktop-cli
 go build -o desktop-cli .
+codesign --force --sign - ./desktop-cli   # required on macOS Apple Silicon
 sudo mv desktop-cli /usr/local/bin/
 ```
 
@@ -123,6 +124,12 @@ desktop-cli read --app "Safari" --text "Submit" --flat
 ### Click an element
 
 ```bash
+# Click by text (finds element matching text, then clicks it)
+desktop-cli click --text "Submit" --app "Safari"
+
+# Click by text with role filter (disambiguate when multiple elements match)
+desktop-cli click --text "Save" --roles "btn" --app "Safari"
+
 # Click by element ID (re-reads the element tree to get current coordinates)
 desktop-cli click --id 5 --app "Safari"
 
@@ -151,7 +158,13 @@ desktop-cli type --key "cmd+c"
 desktop-cli type --key "ctrl+shift+t"
 desktop-cli type --key "enter"
 
-# Click an element to focus it, then type into it
+# Find an element by text, focus it, then type into it
+desktop-cli type --target "Search" --app "Safari" --text "search query"
+
+# Find an element by text + role filter, then type into it
+desktop-cli type --target "Address" --roles "input" --app "Safari" --text "https://example.com"
+
+# Click an element by ID to focus it, then type into it
 desktop-cli type --id 4 --app "Safari" --text "search query"
 ```
 
@@ -171,6 +184,9 @@ desktop-cli scroll --direction right
 # Scroll at specific screen coordinates
 desktop-cli scroll --direction down --x 500 --y 400
 
+# Scroll within an element found by text
+desktop-cli scroll --direction down --text "Web Content" --app "Safari"
+
 # Scroll within a specific element by ID
 desktop-cli scroll --direction down --id 6 --app "Safari"
 ```
@@ -180,6 +196,9 @@ desktop-cli scroll --direction down --id 6 --app "Safari"
 ```bash
 # Drag from one screen coordinate to another
 desktop-cli drag --from-x 100 --from-y 200 --to-x 400 --to-y 300
+
+# Drag between elements found by text
+desktop-cli drag --from-text "Document.pdf" --to-text "Trash" --app "Finder"
 
 # Drag between elements by ID
 desktop-cli drag --from-id 3 --to-id 7 --app "Finder"
@@ -210,7 +229,13 @@ desktop-cli wait --app "Safari" --for-text "Done" --interval 200
 ### Perform accessibility actions
 
 ```bash
-# Press a button directly via accessibility API (more reliable than click)
+# Press a button by text (finds it and presses via accessibility API — most reliable)
+desktop-cli action --text "Submit" --app "Safari"
+
+# Press a button by text with role filter
+desktop-cli action --text "Save" --roles "btn" --app "Safari"
+
+# Press a button by element ID
 desktop-cli action --id 5 --app "Safari"
 
 # Press is the default action, but you can specify others:
@@ -235,7 +260,10 @@ desktop-cli action --id 3 --action cancel --app "Safari"
 ### Set element values
 
 ```bash
-# Set a text field's value directly (instant, no keystroke simulation)
+# Set a text field's value by finding it by text
+desktop-cli set-value --text "Search" --value "hello world" --app "Safari"
+
+# Set a text field's value directly by ID (instant, no keystroke simulation)
 desktop-cli set-value --id 4 --value "hello world" --app "Safari"
 
 # Set a slider to a specific position
@@ -330,7 +358,8 @@ See `desktop-cli --help` and `desktop-cli <command> --help` for full usage detai
 ### Build
 
 ```bash
-go build -v ./...
+go build -o desktop-cli .
+codesign --force --sign - ./desktop-cli   # required on macOS Apple Silicon
 ```
 
 ### Test

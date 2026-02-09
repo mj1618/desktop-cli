@@ -32,8 +32,9 @@ func init() {
 	typeCmd.Flags().String("key", "", "Key combination (e.g. \"cmd+c\", \"ctrl+shift+t\", \"enter\", \"tab\")")
 	typeCmd.Flags().Int("delay", 0, "Delay between keystrokes in ms")
 	typeCmd.Flags().Int("id", 0, "Focus element by ID first, then type")
-	typeCmd.Flags().String("app", "", "Scope to application (used with --id)")
-	typeCmd.Flags().String("window", "", "Scope to window (used with --id)")
+	typeCmd.Flags().String("app", "", "Scope to application (used with --id or --target)")
+	typeCmd.Flags().String("window", "", "Scope to window (used with --id or --target)")
+	addTextTargetingFlags(typeCmd, "target", "Find element by text and focus it before typing (case-insensitive match on title/value/description)")
 }
 
 func runType(cmd *cobra.Command, args []string) error {
@@ -61,8 +62,25 @@ func runType(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("specify --text, --key, or a positional text argument")
 	}
 
-	// If --id specified, click the element first to focus it
-	if id > 0 {
+	target, roles := getTextTargetingFlags(cmd, "target")
+	hasTarget := target != ""
+
+	// If --target or --id specified, click the element first to focus it
+	if hasTarget {
+		if appName == "" && window == "" {
+			return fmt.Errorf("--target requires --app or --window to scope the element lookup")
+		}
+		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, target, roles)
+		if err != nil {
+			return err
+		}
+		cx := elem.Bounds[0] + elem.Bounds[2]/2
+		cy := elem.Bounds[1] + elem.Bounds[3]/2
+		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
+			return fmt.Errorf("failed to focus element: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	} else if id > 0 {
 		if appName == "" && window == "" {
 			return fmt.Errorf("--id requires --app or --window to scope the element lookup")
 		}

@@ -12,6 +12,15 @@ builds:
     goarch:
       - amd64
       - arm64
+    overrides:
+      - goos: darwin
+        goarch: amd64
+        env:
+          - CGO_ENABLED=1
+      - goos: darwin
+        goarch: arm64
+        env:
+          - CGO_ENABLED=1
     ldflags:
       - -s -w
       - -X github.com/mj1618/desktop-cli/internal/version.Version={{.Version}}
@@ -19,11 +28,13 @@ builds:
       - -X github.com/mj1618/desktop-cli/internal/version.BuildDate={{.Date}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: "checksums.txt"
