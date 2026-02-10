@@ -505,6 +505,176 @@ func TestPruneEmptyGroupsFlat_NilInput(t *testing.T) {
 	}
 }
 
+// --- FilterFlatByText tests ---
+
+func TestFilterFlatByText_EmptyText(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "btn", Title: "OK", Path: "window > btn"},
+		{ID: 2, Role: "txt", Title: "Hello", Path: "window > txt"},
+	}
+	result := FilterFlatByText(elements, "")
+	if len(result) != 2 {
+		t.Errorf("expected 2 elements for empty text, got %d", len(result))
+	}
+}
+
+func TestFilterFlatByText_MatchesOnly(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "window", Title: "Main", Path: "window"},
+		{ID: 2, Role: "group", Path: "window > group"},
+		{ID: 3, Role: "group", Path: "window > group > group"},
+		{ID: 4, Role: "btn", Title: "Submit", Path: "window > group > group > btn"},
+		{ID: 5, Role: "btn", Title: "Cancel", Path: "window > group > group > btn"},
+	}
+	result := FilterFlatByText(elements, "Submit")
+	if len(result) != 1 {
+		t.Fatalf("expected 1 matching element, got %d", len(result))
+	}
+	if result[0].ID != 4 {
+		t.Errorf("expected ID 4, got %d", result[0].ID)
+	}
+}
+
+func TestFilterFlatByText_CaseInsensitive(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "btn", Title: "SUBMIT"},
+		{ID: 2, Role: "btn", Title: "cancel"},
+	}
+	result := FilterFlatByText(elements, "submit")
+	if len(result) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result))
+	}
+	if result[0].ID != 1 {
+		t.Errorf("expected ID 1, got %d", result[0].ID)
+	}
+}
+
+func TestFilterFlatByText_MatchesValueAndDescription(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "input", Value: "hello world"},
+		{ID: 2, Role: "img", Description: "hello icon"},
+		{ID: 3, Role: "btn", Title: "OK"},
+	}
+	result := FilterFlatByText(elements, "hello")
+	if len(result) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(result))
+	}
+	if result[0].ID != 1 || result[1].ID != 2 {
+		t.Errorf("expected IDs 1 and 2, got %d and %d", result[0].ID, result[1].ID)
+	}
+}
+
+func TestFilterFlatByText_NoMatch(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "btn", Title: "OK"},
+		{ID: 2, Role: "txt", Title: "Hello"},
+	}
+	result := FilterFlatByText(elements, "nonexistent")
+	if len(result) != 0 {
+		t.Errorf("expected 0 matches, got %d", len(result))
+	}
+}
+
+func TestFilterFlatByText_PreservesPath(t *testing.T) {
+	elements := []FlatElement{
+		{ID: 1, Role: "btn", Title: "Submit", Path: "window > group > group > btn"},
+	}
+	result := FilterFlatByText(elements, "Submit")
+	if len(result) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result))
+	}
+	if result[0].Path != "window > group > group > btn" {
+		t.Errorf("expected path preserved, got %q", result[0].Path)
+	}
+}
+
+func TestFilterFlatByText_NilInput(t *testing.T) {
+	result := FilterFlatByText(nil, "test")
+	if len(result) != 0 {
+		t.Errorf("expected 0 elements for nil input, got %d", len(result))
+	}
+}
+
+// --- FindFirstByText tests ---
+
+func TestFindFirstByText_Found(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "group", Title: "Toolbar"},
+		{ID: 2, Role: "group", Title: "Results", Children: []Element{
+			{ID: 3, Role: "lnk", Title: "First Result"},
+			{ID: 4, Role: "lnk", Title: "Second Result"},
+		}},
+		{ID: 5, Role: "btn", Title: "Next"},
+	}
+	result := FindFirstByText(elements, "Results")
+	if result == nil {
+		t.Fatal("expected to find element, got nil")
+	}
+	if result.ID != 2 {
+		t.Errorf("expected ID 2, got %d", result.ID)
+	}
+	if len(result.Children) != 2 {
+		t.Errorf("expected 2 children preserved, got %d", len(result.Children))
+	}
+}
+
+func TestFindFirstByText_NotFound(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "btn", Title: "OK"},
+	}
+	result := FindFirstByText(elements, "nonexistent")
+	if result != nil {
+		t.Errorf("expected nil, got element ID %d", result.ID)
+	}
+}
+
+func TestFindFirstByText_NestedMatch(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "window", Title: "Main", Children: []Element{
+			{ID: 2, Role: "group", Children: []Element{
+				{ID: 3, Role: "list", Title: "Search Results", Children: []Element{
+					{ID: 4, Role: "row", Title: "Item 1"},
+					{ID: 5, Role: "row", Title: "Item 2"},
+				}},
+			}},
+		}},
+	}
+	result := FindFirstByText(elements, "Search Results")
+	if result == nil {
+		t.Fatal("expected to find nested element, got nil")
+	}
+	if result.ID != 3 {
+		t.Errorf("expected ID 3, got %d", result.ID)
+	}
+}
+
+func TestFindFirstByText_CaseInsensitive(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "group", Title: "RESULTS"},
+	}
+	result := FindFirstByText(elements, "results")
+	if result == nil {
+		t.Fatal("expected to find element, got nil")
+	}
+	if result.ID != 1 {
+		t.Errorf("expected ID 1, got %d", result.ID)
+	}
+}
+
+func TestFindFirstByText_ReturnsFirstMatch(t *testing.T) {
+	elements := []Element{
+		{ID: 1, Role: "group", Title: "Results A"},
+		{ID: 2, Role: "group", Title: "Results B"},
+	}
+	result := FindFirstByText(elements, "Results")
+	if result == nil {
+		t.Fatal("expected to find element, got nil")
+	}
+	if result.ID != 1 {
+		t.Errorf("expected first match ID 1, got %d", result.ID)
+	}
+}
+
 func TestBoundsIntersect(t *testing.T) {
 	tests := []struct {
 		name string

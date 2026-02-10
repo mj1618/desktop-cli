@@ -71,6 +71,26 @@ func textMatchesElement(el Element, textLower string) bool {
 		strings.Contains(strings.ToLower(el.Description), textLower)
 }
 
+// FindFirstByText searches the element tree depth-first for the first element
+// whose title, value, or description contains the given text (case-insensitive).
+// Returns a pointer to the matched element, or nil if not found.
+func FindFirstByText(elements []Element, text string) *Element {
+	textLower := strings.ToLower(text)
+	return findFirstByTextRecursive(elements, textLower)
+}
+
+func findFirstByTextRecursive(elements []Element, textLower string) *Element {
+	for i := range elements {
+		if textMatchesElement(elements[i], textLower) {
+			return &elements[i]
+		}
+		if found := findFirstByTextRecursive(elements[i].Children, textLower); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
 // FilterByFocused filters elements to only those that have Focused == true.
 // It recursively searches children and returns matching elements with their
 // ancestry path preserved (in tree mode) or just the focused element (in flat mode).
@@ -133,6 +153,26 @@ func PruneEmptyGroupsFlat(elements []FlatElement) []FlatElement {
 			continue
 		}
 		result = append(result, el)
+	}
+	return result
+}
+
+// FilterFlatByText filters a flat element list to only those whose title,
+// value, or description contains the given text (case-insensitive).
+// Unlike FilterByText (which preserves ancestors for tree display), this
+// returns only elements that actually match.
+func FilterFlatByText(elements []FlatElement, text string) []FlatElement {
+	if text == "" {
+		return elements
+	}
+	textLower := strings.ToLower(text)
+	var result []FlatElement
+	for _, el := range elements {
+		if strings.Contains(strings.ToLower(el.Title), textLower) ||
+			strings.Contains(strings.ToLower(el.Value), textLower) ||
+			strings.Contains(strings.ToLower(el.Description), textLower) {
+			result = append(result, el)
+		}
 	}
 	return result
 }

@@ -10,11 +10,13 @@ import (
 
 // ActionResult is the YAML output of a successful action command.
 type ActionResult struct {
-	OK     bool         `yaml:"ok"                json:"ok"`
-	Action string       `yaml:"action"            json:"action"`
-	ID     int          `yaml:"id"                json:"id"`
-	Name   string       `yaml:"name"              json:"name"`
-	Target *ElementInfo `yaml:"target,omitempty"  json:"target,omitempty"`
+	OK      bool          `yaml:"ok"                 json:"ok"`
+	Action  string        `yaml:"action"             json:"action"`
+	ID      int           `yaml:"id"                 json:"id"`
+	Name    string        `yaml:"name"               json:"name"`
+	Target  *ElementInfo  `yaml:"target,omitempty"   json:"target,omitempty"`
+	Display []ElementInfo `yaml:"display,omitempty"  json:"display,omitempty"`
+	State   string        `yaml:"state,omitempty"    json:"state,omitempty"`
 }
 
 var actionCmd = &cobra.Command{
@@ -46,6 +48,8 @@ func init() {
 	actionCmd.Flags().Int("window-id", 0, "Scope to window by system ID")
 	actionCmd.Flags().Int("pid", 0, "Scope to process by PID")
 	addTextTargetingFlags(actionCmd, "text", "Find element by text and perform action (case-insensitive match on title/value/description)")
+	actionCmd.Flags().Bool("no-display", false, "Skip collecting display elements in the response")
+	addPostReadFlags(actionCmd)
 }
 
 func runAction(cmd *cobra.Command, args []string) error {
@@ -63,7 +67,7 @@ func runAction(cmd *cobra.Command, args []string) error {
 	window, _ := cmd.Flags().GetString("window")
 	windowID, _ := cmd.Flags().GetInt("window-id")
 	pid, _ := cmd.Flags().GetInt("pid")
-	text, roles := getTextTargetingFlags(cmd, "text")
+	text, roles, exact, scopeID := getTextTargetingFlags(cmd, "text")
 
 	hasID := cmd.Flags().Changed("id")
 	hasText := text != ""
@@ -76,13 +80,17 @@ func runAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve text to element ID if needed
+	// Resolve target and capture pre-action snapshot
+	var preActionTarget *ElementInfo
 	if hasText && !hasID {
-		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles)
+		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles, exact, scopeID)
 		if err != nil {
 			return err
 		}
 		id = elem.ID
+		preActionTarget = elementInfoFromElement(elem)
+	} else {
+		preActionTarget = readElementByID(provider, appName, window, windowID, pid, id)
 	}
 
 	opts := platform.ActionOptions{
@@ -98,15 +106,30 @@ func runAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	result := ActionResult{
-		OK:     true,
-		Action: "action",
-		ID:     id,
-		Name:   action,
+	// Read display elements after the action (e.g. Calculator display)
+	noDisplay, _ := cmd.Flags().GetBool("no-display")
+	postRead, postReadDelay := getPostReadFlags(cmd)
+
+	var display []ElementInfo
+	if !noDisplay && !postRead {
+		display = readDisplayElements(provider, appName, window, windowID, pid)
 	}
 
-	// Re-read the target element to include its current state
-	result.Target = readElementByID(provider, appName, window, windowID, pid, id)
+	// Post-read: include full UI state in agent format
+	var state string
+	if postRead {
+		state = readPostActionState(provider, appName, window, windowID, pid, postReadDelay)
+	}
+
+	result := ActionResult{
+		OK:      true,
+		Action:  "action",
+		ID:      id,
+		Name:    action,
+		Target:  preActionTarget,
+		Display: display,
+		State:   state,
+	}
 
 	return output.Print(result)
 }

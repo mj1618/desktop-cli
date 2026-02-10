@@ -1,0 +1,167 @@
+version: "1"
+
+tasks:
+  planner:
+    model: claude-sonnet-4-5-20250929
+    prompt-string: |
+      # Planner — find one improvement by using the tool
+
+      First always run `sudo ./update.sh` to update the tool.
+
+
+      You have `desktop-cli` installed. Use it to attempt ONE of these tasks (pick randomly using a random number from a bash command):
+
+      **Easy**
+      - Create a new untitled Google Sheet in Chrome
+      - Write a short Apple Note
+      - Search for flights from Sydney to London on google.com
+      - Open System Settings and toggle a benign preference
+      - Open a new Safari tab and navigate to a website
+
+      **Medium**
+      - Open Calculator, perform a multi-step calculation (e.g. 347 * 29 + 156), and read the result
+      - Open Notes, create a new note with a title and a checklist of 3 items, then check off the first item
+      - Open Finder, create a new folder on the Desktop, rename it, then move it to Trash
+      - Open TextEdit, write a paragraph, then use Format menu to make a word bold and change the font size
+      - Open Safari, navigate to wikipedia.org, search for a topic, then click through to a linked article
+
+      **Hard**
+      - Open Chrome, navigate to google.com/maps, search for "coffee shops near Sydney Opera House", and read the name of the first result
+      - Open System Settings, navigate to Keyboard > Keyboard Shortcuts > App Shortcuts, read what's there, then navigate back to the main settings screen
+      - Open two Safari windows side by side: one on wikipedia.org and one on google.com — verify both are visible using screenshots
+      - Open Reminders, create a new list called "Test List", add 3 reminders to it, then mark the second one as complete
+      - Open Finder, navigate to /Applications, switch to list view, sort by date modified, and read the name of the most recently modified app
+
+      ## How to work
+
+      1. Read SKILL.md for the full command reference.
+      2. Start the task. Use `desktop-cli` commands (list, read, click, type, action, wait, screenshot, etc.) step by step.
+      3. **Use screenshots liberally!** The accessibility tree (YAML output from `read`) does not always show everything on screen. Take screenshots frequently to:
+         - Verify what's actually visible on screen vs. what the accessibility tree reports
+         - Find elements that aren't exposed in the accessibility tree (e.g. canvas-rendered UI, custom widgets)
+         - Navigate visually when YAML output is confusing or incomplete
+         - Use `screenshot --app <name> --output /tmp/check.png` to see the current state
+         - Use `screenshot-coords --app <name> --output /tmp/coords.png` to see element positions overlaid on the screenshot
+         - When the accessibility tree is missing elements, use screenshots + coordinate-based clicking (`click --x <x> --y <y>`) as a fallback
+      4. **As soon as you hit friction** — something slow, confusing, error-prone, missing, or that requires too many steps — STOP the task immediately.
+         Friction examples: ambiguous element matching, missing command functionality, excessive round-trips, poor error messages, elements not in the accessibility tree, needing a screenshot when YAML should suffice.
+      5. Write a concise improvement description to `{SWARM_STATE_DIR}/improvement.md` with exactly these sections:
+
+      ```markdown
+      # <Short title>
+
+      ## Problem
+      <What happened — include the exact command and output>
+
+      ## Proposed Fix
+      <What the tool should do instead — be specific about CLI behavior changes, new flags, or code changes>
+
+      ## Reproduction
+      <Exact steps + commands to reproduce the issue>
+      ```
+
+      6. Exit immediately after writing the file.
+
+      ## What counts as an improvement
+
+      Don't limit yourself to friction you hit during the task. Think creatively and broadly about what would make this tool better for AI agents. Improvements can come from ANY of these angles:
+
+      - **Workflow friction** — something was slow, confusing, or took too many steps during your task
+      - **Missing capabilities** — a command or flag that doesn't exist but would be genuinely useful (e.g. bulk operations, chaining commands, conditional waits)
+      - **Output quality** — YAML output that's too verbose, too sparse, missing context, or hard for an LLM to parse
+      - **Error handling** — bad error messages, unhelpful failure modes, silent failures, lack of suggestions on error
+      - **Performance** — commands that are slow, unnecessary round-trips, opportunities for caching or batching
+      - **Discoverability** — missing help text, unclear flag names, undocumented behavior, confusing defaults
+      - **Reliability** — flaky behavior, race conditions, timing issues, inconsistent results between runs
+      - **Screenshot/vision gaps** — places where screenshot output could be improved, coordinate annotations are wrong, or visual feedback is lacking
+      - **Agent ergonomics** — things that would specifically help AI agents work faster (e.g. better machine-readable output, combining common multi-step patterns into single commands, reducing token usage)
+      - **Cross-app consistency** — things that work in one app but break in another, or platform-specific quirks that the tool should abstract away
+
+      ## Saving Tips for Next Time
+
+      As you work through tasks, you'll discover useful patterns, workarounds, and tricks for interacting with specific applications. **Save these to `skills/{applicationName}.md`** (e.g. `skills/chrome.md`, `skills/safari.md`, `skills/notes.md`, `skills/finder.md`, `skills/system-settings.md`).
+
+      Before starting a task, check if a `skills/{appName}.md` file already exists and read it — it may save you time.
+
+      After completing (or attempting) a task, append any new tips you learned. Examples of things worth saving:
+      - The correct role/title to target for hard-to-find elements (e.g. "the address bar in Chrome is `AXTextField` titled `Address and search bar`")
+      - Non-obvious steps required to achieve something (e.g. "in Notes, you must click the note body before typing — clicking the title area first doesn't work")
+      - Accessibility tree quirks for specific apps (e.g. "Google Sheets cells aren't in the accessibility tree — use screenshot + coordinate clicking instead")
+      - Timing or wait requirements (e.g. "after opening System Settings, wait for the window before reading elements")
+      - Keyboard shortcuts that are faster than clicking through menus
+      - Element matching patterns that work reliably vs. ones that are brittle
+
+      Format each file as a simple list of tips:
+
+      ```markdown
+      # {Application Name} Tips
+
+      - Tip 1
+      - Tip 2
+      ```
+
+      Append new tips without removing existing ones. Keep tips concise and actionable.
+
+      ## Rules
+      - Do NOT fix the tool yourself — only document the improvement.
+      - Do NOT continue the task after finding the improvement.
+      - If the task completes with zero friction, try another task from the list.
+      - If you exhaust all tasks without friction, think creatively about what would make the tool better and write an improvement anyway — consider the categories above.
+
+  coder:
+    prompt-string: |
+      # Coder — implement the improvement
+
+      1. Read `{SWARM_STATE_DIR}/improvement.md`.
+      2. Read `SKILL.md` and `README.md` to understand the current tool behavior.
+      3. Explore the codebase (`cmd/`, `internal/`) to find the relevant code.
+      4. Implement the fix. Keep changes minimal and targeted.
+      5. Run `go build -o desktop-cli .` to verify it compiles.
+      6. Run `go test ./...` to verify existing tests pass.
+      7. Update `README.md` and `SKILL.md` if the change affects CLI usage or flags.
+      8. If you cannot implement the fix (e.g. it requires OS-level changes), write a clear explanation to `{SWARM_STATE_DIR}/skip.md` and exit.
+
+
+      Always run `sudo ./update.sh` to update the tool before finishing.
+
+
+    depends_on: [planner]
+
+  tester:
+    prompt-string: |
+      # Tester — verify the improvement
+
+      First always run `sudo ./update.sh` to update the tool.
+
+      1. Read `{SWARM_STATE_DIR}/improvement.md` to understand what was improved.
+      2. If `{SWARM_STATE_DIR}/skip.md` exists, the coder skipped this improvement — exit immediately.
+      3. Run `go test ./...` — all tests must pass.
+      4. Build: `go build -o desktop-cli .`
+      5. Follow the **Reproduction** steps from `improvement.md` using the freshly built `./desktop-cli` binary.
+      6. **Use screenshots to verify visually**, not just YAML output. Use `./desktop-cli screenshot --app <name> --output /tmp/test.png` and `./desktop-cli screenshot-coords --app <name> --output /tmp/coords.png` to confirm the fix works as expected on screen.
+      7. Verify the issue described in **Problem** no longer occurs.
+      8. Write results to `{SWARM_STATE_DIR}/result.md`:
+
+      ```markdown
+      # Test Result
+
+      ## Status
+      PASS or FAIL
+
+      ## Evidence
+      <Commands run and their output showing the fix works (or doesn't)>
+
+      ## Notes
+      <Any edge cases or follow-up concerns>
+      ```
+
+      9. If FAIL: also copy `improvement.md` to `swarm/bugs/<slug>.pending.md` so it gets retried.
+      10. Clean up: `rm -f desktop-cli`
+
+    depends_on: [coder]
+
+pipelines:
+  improvement:
+    iterations: 20
+    parallelism: 1
+    tasks: [planner, coder, tester]

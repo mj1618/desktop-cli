@@ -26,6 +26,7 @@ func init() {
 	screenshotCmd.Flags().String("format", "png", "Output format: png, jpg")
 	screenshotCmd.Flags().Int("quality", 80, "JPEG quality 1-100")
 	screenshotCmd.Flags().Float64("scale", 0.5, "Scale factor 0.1-1.0 (for token efficiency)")
+	screenshotCmd.Flags().Bool("include-menubar", false, "Include macOS menu bar in app screenshots")
 }
 
 func runScreenshot(cmd *cobra.Command, args []string) error {
@@ -45,15 +46,17 @@ func runScreenshot(cmd *cobra.Command, args []string) error {
 	format, _ := cmd.Flags().GetString("format")
 	quality, _ := cmd.Flags().GetInt("quality")
 	scale, _ := cmd.Flags().GetFloat64("scale")
+	includeMenuBar, _ := cmd.Flags().GetBool("include-menubar")
 
 	opts := platform.ScreenshotOptions{
-		App:      appName,
-		Window:   window,
-		WindowID: windowID,
-		PID:      pid,
-		Format:   format,
-		Quality:  quality,
-		Scale:    scale,
+		App:            appName,
+		Window:         window,
+		WindowID:       windowID,
+		PID:            pid,
+		Format:         format,
+		Quality:        quality,
+		Scale:          scale,
+		IncludeMenuBar: includeMenuBar,
 	}
 
 	data, err := provider.Screenshotter.CaptureWindow(opts)

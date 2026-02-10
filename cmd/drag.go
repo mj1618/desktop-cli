@@ -36,6 +36,8 @@ func init() {
 	dragCmd.Flags().String("from-text", "", "Find start element by text (case-insensitive match)")
 	dragCmd.Flags().String("to-text", "", "Find end element by text (case-insensitive match)")
 	dragCmd.Flags().String("roles", "", "Filter by role when using text targeting (e.g. \"btn\", \"btn,lnk\")")
+	dragCmd.Flags().Bool("exact", false, "Require exact match on title/value/description (default: substring)")
+	dragCmd.Flags().Int("scope-id", 0, "Limit text search to descendants of this element ID")
 	dragCmd.Flags().String("app", "", "Scope to application")
 	dragCmd.Flags().String("window", "", "Scope to window")
 }
@@ -58,6 +60,8 @@ func runDrag(cmd *cobra.Command, args []string) error {
 	fromText, _ := cmd.Flags().GetString("from-text")
 	toText, _ := cmd.Flags().GetString("to-text")
 	roles, _ := cmd.Flags().GetString("roles")
+	exact, _ := cmd.Flags().GetBool("exact")
+	scopeID, _ := cmd.Flags().GetInt("scope-id")
 	appName, _ := cmd.Flags().GetString("app")
 	window, _ := cmd.Flags().GetString("window")
 
@@ -76,7 +80,7 @@ func runDrag(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--from-text/--to-text requires --app or --window to scope the element lookup")
 		}
 		if fromText != "" {
-			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, fromText, roles)
+			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, fromText, roles, exact, scopeID)
 			if err != nil {
 				return fmt.Errorf("from-element: %w", err)
 			}
@@ -84,7 +88,7 @@ func runDrag(cmd *cobra.Command, args []string) error {
 			fromY = elem.Bounds[1] + elem.Bounds[3]/2
 		}
 		if toText != "" {
-			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, toText, roles)
+			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, toText, roles, exact, scopeID)
 			if err != nil {
 				return fmt.Errorf("to-element: %w", err)
 			}

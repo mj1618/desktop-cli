@@ -12,12 +12,14 @@ import (
 
 // TypeResult is the YAML output of a successful type command.
 type TypeResult struct {
-	OK      bool         `yaml:"ok"                json:"ok"`
-	Action  string       `yaml:"action"            json:"action"`
-	Text    string       `yaml:"text,omitempty"    json:"text,omitempty"`
-	Key     string       `yaml:"key,omitempty"     json:"key,omitempty"`
-	Target  *ElementInfo `yaml:"target,omitempty"  json:"target,omitempty"`
-	Focused *ElementInfo `yaml:"focused,omitempty" json:"focused,omitempty"`
+	OK      bool          `yaml:"ok"                json:"ok"`
+	Action  string        `yaml:"action"            json:"action"`
+	Text    string        `yaml:"text,omitempty"    json:"text,omitempty"`
+	Key     string        `yaml:"key,omitempty"     json:"key,omitempty"`
+	Target  *ElementInfo  `yaml:"target,omitempty"  json:"target,omitempty"`
+	Focused *ElementInfo  `yaml:"focused,omitempty" json:"focused,omitempty"`
+	Display []ElementInfo `yaml:"display,omitempty" json:"display,omitempty"`
+	State   string        `yaml:"state,omitempty"   json:"state,omitempty"`
 }
 
 var typeCmd = &cobra.Command{
@@ -37,6 +39,8 @@ func init() {
 	typeCmd.Flags().String("app", "", "Scope to application (used with --id or --target)")
 	typeCmd.Flags().String("window", "", "Scope to window (used with --id or --target)")
 	addTextTargetingFlags(typeCmd, "target", "Find element by text and focus it before typing (case-insensitive match on title/value/description)")
+	typeCmd.Flags().Bool("no-display", false, "Skip collecting display elements in the response")
+	addPostReadFlags(typeCmd)
 }
 
 func runType(cmd *cobra.Command, args []string) error {
@@ -64,22 +68,22 @@ func runType(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("specify --text, --key, or a positional text argument")
 	}
 
-	target, roles := getTextTargetingFlags(cmd, "target")
+	target, roles, exact, scopeID := getTextTargetingFlags(cmd, "target")
 	hasTarget := target != ""
 
-	// Track the targeted element ID for post-action re-read
-	targetID := 0
+	// Track whether we targeted a specific element
+	hasTargetedElement := false
 
 	// If --target or --id specified, click the element first to focus it
 	if hasTarget {
 		if appName == "" && window == "" {
 			return fmt.Errorf("--target requires --app or --window to scope the element lookup")
 		}
-		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, target, roles)
+		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, target, roles, exact, scopeID)
 		if err != nil {
 			return err
 		}
-		targetID = elem.ID
+		hasTargetedElement = true
 		cx := elem.Bounds[0] + elem.Bounds[2]/2
 		cy := elem.Bounds[1] + elem.Bounds[3]/2
 		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
@@ -104,7 +108,7 @@ func runType(cmd *cobra.Command, args []string) error {
 		if elem == nil {
 			return fmt.Errorf("element with id %d not found", id)
 		}
-		targetID = elem.ID
+		hasTargetedElement = true
 		cx := elem.Bounds[0] + elem.Bounds[2]/2
 		cy := elem.Bounds[1] + elem.Bounds[3]/2
 		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
@@ -113,44 +117,112 @@ func runType(cmd *cobra.Command, args []string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 
+	// Type text first (if provided)
+	if text != "" {
+		// Calculator mode: when targeting Calculator with no specific element,
+		// translate text into button presses since Calculator has no text input.
+		if isCalculatorApp(appName) && !hasTargetedElement && provider.ActionPerformer != nil {
+			if err := typeViaButtons(provider, appName, window, text); err != nil {
+				return err
+			}
+		} else {
+			if err := provider.Inputter.TypeText(text, delayMs); err != nil {
+				return err
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Capture target element info after typing but before the key press.
+	// If a key like "tab" moves focus to another element, we still want
+	// to report the original target (not the newly-focused element).
+	var targetInfo *ElementInfo
+	if hasTargetedElement {
+		targetInfo = readFocusedElement(provider, appName, window, 0, 0)
+	}
+
+	// Then press key combo (if provided)
 	if key != "" {
 		keys := strings.Split(key, "+")
 		if err := provider.Inputter.KeyCombo(keys); err != nil {
 			return err
 		}
-
-		result := TypeResult{
-			OK:     true,
-			Action: "key",
-			Key:    key,
-		}
-
-		// Read back the element that now has focus after the key press
 		time.Sleep(80 * time.Millisecond)
-		result.Focused = readFocusedElement(provider, appName, window, 0, 0)
-
-		return output.Print(result)
 	}
 
-	if err := provider.Inputter.TypeText(text, delayMs); err != nil {
-		return err
-	}
-
+	// Build result
 	result := TypeResult{
-		OK:     true,
-		Action: "type",
-		Text:   text,
+		OK:   true,
+		Text: text,
+		Key:  key,
 	}
 
-	// Include target element info after typing
-	time.Sleep(50 * time.Millisecond)
-	if targetID > 0 {
-		// Re-read the targeted element to get its current value
-		result.Target = readElementByID(provider, appName, window, 0, 0, targetID)
+	// Determine action label
+	switch {
+	case text != "" && key != "":
+		result.Action = "type+key"
+	case key != "":
+		result.Action = "key"
+	default:
+		result.Action = "type"
+	}
+
+	// Include target/focused element info.
+	if hasTargetedElement {
+		result.Target = targetInfo
 	} else {
-		// No explicit target — report the focused element that received input
 		result.Focused = readFocusedElement(provider, appName, window, 0, 0)
+	}
+
+	// Include display elements (e.g. Calculator display) when app is scoped
+	noDisplay, _ := cmd.Flags().GetBool("no-display")
+	postRead, postReadDelay := getPostReadFlags(cmd)
+
+	if !noDisplay && !postRead && (appName != "" || window != "") {
+		result.Display = readDisplayElements(provider, appName, window, 0, 0)
+	}
+
+	// Post-read: include full UI state in agent format
+	if postRead && (appName != "" || window != "") {
+		result.State = readPostActionState(provider, appName, window, 0, 0, postReadDelay)
 	}
 
 	return output.Print(result)
+}
+
+// calculatorButtonMap maps text characters to Calculator button titles.
+var calculatorButtonMap = map[byte]string{
+	'0': "0", '1': "1", '2': "2", '3': "3", '4': "4",
+	'5': "5", '6': "6", '7': "7", '8': "8", '9': "9",
+	'+': "Add", '-': "Subtract", '*': "Multiply", '/': "Divide",
+	'=': "Equals", '.': "Point",
+}
+
+// isCalculatorApp returns true if the app name matches Calculator.
+func isCalculatorApp(appName string) bool {
+	return strings.EqualFold(appName, "calculator")
+}
+
+// typeViaButtons presses Calculator buttons for each character in text.
+func typeViaButtons(provider *platform.Provider, appName, window, text string) error {
+	for i := 0; i < len(text); i++ {
+		btnTitle, ok := calculatorButtonMap[text[i]]
+		if !ok {
+			return fmt.Errorf("unsupported Calculator character: %c", text[i])
+		}
+		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, btnTitle, "btn", false, 0)
+		if err != nil {
+			return fmt.Errorf("Calculator button %q not found for character %c: %w", btnTitle, text[i], err)
+		}
+		if err := provider.ActionPerformer.PerformAction(platform.ActionOptions{
+			App:    appName,
+			Window: window,
+			ID:     elem.ID,
+			Action: "press",
+		}); err != nil {
+			return fmt.Errorf("failed to press Calculator button %q: %w", btnTitle, err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	return nil
 }

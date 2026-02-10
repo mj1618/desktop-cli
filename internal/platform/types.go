@@ -83,13 +83,14 @@ type FocusOptions struct {
 
 // ScreenshotOptions configures what to capture.
 type ScreenshotOptions struct {
-	App      string  // Capture frontmost window of this app
-	Window   string  // Capture window matching this title substring
-	WindowID int     // Capture window by system ID
-	PID      int     // Capture frontmost window of this PID
-	Format   string  // "png" or "jpg"
-	Quality  int     // JPEG quality 1-100 (ignored for PNG)
-	Scale    float64 // Scale factor 0.1-1.0 (default 0.5)
+	App            string  // Capture frontmost window of this app
+	Window         string  // Capture window matching this title substring
+	WindowID       int     // Capture window by system ID
+	PID            int     // Capture frontmost window of this PID
+	Format         string  // "png" or "jpg"
+	Quality        int     // JPEG quality 1-100 (ignored for PNG)
+	Scale          float64 // Scale factor 0.1-1.0 (default 0.5)
+	IncludeMenuBar bool    // Include macOS menu bar in app screenshots
 }
 
 // ActionOptions configures which element to act on and what action to perform.

@@ -65,6 +65,12 @@ func runWait(cmd *cobra.Command, args []string) error {
 	depth, _ := cmd.Flags().GetInt("depth")
 	rolesStr, _ := cmd.Flags().GetString("roles")
 
+	// Expand meta-roles in --for-role (e.g. "interactive" → ["input", "other", ...])
+	var forRoles []string
+	if forRole != "" {
+		forRoles = model.ExpandRoles([]string{forRole})
+	}
+
 	if forText == "" && forRole == "" && forID == 0 {
 		return fmt.Errorf("specify at least one condition: --for-text, --for-role, or --for-id")
 	}
@@ -78,6 +84,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 		for _, r := range strings.Split(rolesStr, ",") {
 			roles = append(roles, strings.TrimSpace(r))
 		}
+		roles = model.ExpandRoles(roles)
 	}
 
 	readOpts := platform.ReadOptions{
@@ -104,7 +111,7 @@ func runWait(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		matched := checkWaitCondition(elements, forText, forRole, forID)
+		matched := checkWaitCondition(elements, forText, forRoles, forID)
 
 		conditionMet := matched
 		if gone {
@@ -141,12 +148,12 @@ func runWait(cmd *cobra.Command, args []string) error {
 }
 
 // checkWaitCondition checks if any element in the tree matches the wait criteria.
-func checkWaitCondition(elements []model.Element, forText, forRole string, forID int) bool {
+func checkWaitCondition(elements []model.Element, forText string, forRoles []string, forID int) bool {
 	for _, elem := range elements {
-		if matchesCondition(elem, forText, forRole, forID) {
+		if matchesCondition(elem, forText, forRoles, forID) {
 			return true
 		}
-		if checkWaitCondition(elem.Children, forText, forRole, forID) {
+		if checkWaitCondition(elem.Children, forText, forRoles, forID) {
 			return true
 		}
 	}
@@ -155,12 +162,23 @@ func checkWaitCondition(elements []model.Element, forText, forRole string, forID
 
 // matchesCondition checks if a single element matches all specified criteria.
 // When multiple criteria are given, ALL must match (AND logic).
-func matchesCondition(elem model.Element, forText, forRole string, forID int) bool {
+// forRoles may contain multiple roles (e.g. expanded from a meta-role like "interactive");
+// the element matches if its role is any one of them.
+func matchesCondition(elem model.Element, forText string, forRoles []string, forID int) bool {
 	if forID > 0 && elem.ID != forID {
 		return false
 	}
-	if forRole != "" && elem.Role != forRole {
-		return false
+	if len(forRoles) > 0 {
+		matched := false
+		for _, r := range forRoles {
+			if elem.Role == r {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
 	}
 	if forText != "" {
 		textLower := strings.ToLower(forText)

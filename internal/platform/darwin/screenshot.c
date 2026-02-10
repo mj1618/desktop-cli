@@ -5,6 +5,7 @@
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <ImageIO/ImageIO.h>
+#import <AppKit/AppKit.h>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include "screenshot.h"
@@ -172,6 +173,55 @@ int cg_capture_screen(int format, int quality, float scale,
     return rc;
 }
 
+float cg_get_menubar_height(void) {
+    NSScreen *screen = [NSScreen mainScreen];
+    if (!screen) return 25.0f; // fallback
+    NSRect frame = [screen frame];
+    NSRect visible = [screen visibleFrame];
+    // Menu bar height = total height - visible height - visible origin offset
+    // In macOS coordinates, origin is bottom-left. The menu bar is at the top.
+    float menuBarHeight = (float)(frame.size.height - (visible.origin.y - frame.origin.y + visible.size.height));
+    if (menuBarHeight < 20.0f) menuBarHeight = 25.0f; // sanity fallback
+    return menuBarHeight;
+}
+
+float cg_get_display_width(void) {
+    CGRect bounds = CGDisplayBounds(CGMainDisplayID());
+    return (float)bounds.size.width;
+}
+
+int cg_capture_rect(float x, float y, float w, float h,
+                    int format, int quality, float scale,
+                    ScreenshotResult* result) {
+    CGWindowListCreateImageFunc captureFn = get_capture_func();
+    if (!captureFn) return -1;
+
+    CGRect rect = CGRectMake(x, y, w, h);
+    CGImageRef image = captureFn(rect,
+        kCGWindowListOptionOnScreenOnly, kCGNullWindowID,
+        kCGWindowImageDefault);
+    if (!image) return -1;
+
+    CGImageRef finalImage = image;
+    CGImageRef scaledImage = NULL;
+
+    if (scale > 0.0f && scale < 1.0f) {
+        scaledImage = scale_image(image, scale);
+        if (scaledImage) {
+            finalImage = scaledImage;
+        }
+    }
+
+    result->width = (int)CGImageGetWidth(finalImage);
+    result->height = (int)CGImageGetHeight(finalImage);
+
+    int rc = encode_image(finalImage, format, quality, &result->data, &result->length);
+
+    if (scaledImage) CGImageRelease(scaledImage);
+    CGImageRelease(image);
+    return rc;
+}
+
 void cg_free_screenshot(ScreenshotResult* result) {
     if (result && result->data) {
         free(result->data);
@@ -181,4 +231,8 @@ void cg_free_screenshot(ScreenshotResult* result) {
 
 int cg_check_screen_recording(void) {
     return CGPreflightScreenCaptureAccess() ? 1 : 0;
+}
+
+int cg_request_screen_recording(void) {
+    return CGRequestScreenCaptureAccess() ? 1 : 0;
 }

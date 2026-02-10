@@ -10,11 +10,12 @@ import (
 
 // SetValueResult is the output of a successful set-value command.
 type SetValueResult struct {
-	OK        bool   `yaml:"ok"        json:"ok"`
-	Action    string `yaml:"action"    json:"action"`
-	ID        int    `yaml:"id"        json:"id"`
-	Value     string `yaml:"value"     json:"value"`
-	Attribute string `yaml:"attribute" json:"attribute"`
+	OK        bool   `yaml:"ok"                json:"ok"`
+	Action    string `yaml:"action"            json:"action"`
+	ID        int    `yaml:"id"                json:"id"`
+	Value     string `yaml:"value"             json:"value"`
+	Attribute string `yaml:"attribute"         json:"attribute"`
+	State     string `yaml:"state,omitempty"   json:"state,omitempty"`
 }
 
 var setValueCmd = &cobra.Command{
@@ -48,6 +49,7 @@ func init() {
 	setValueCmd.Flags().Int("window-id", 0, "Scope to window by system ID")
 	setValueCmd.Flags().Int("pid", 0, "Scope to process by PID")
 	addTextTargetingFlags(setValueCmd, "text", "Find element by text and set its value (case-insensitive match on title/value/description)")
+	addPostReadFlags(setValueCmd)
 }
 
 func runSetValue(cmd *cobra.Command, args []string) error {
@@ -66,7 +68,7 @@ func runSetValue(cmd *cobra.Command, args []string) error {
 	window, _ := cmd.Flags().GetString("window")
 	windowID, _ := cmd.Flags().GetInt("window-id")
 	pid, _ := cmd.Flags().GetInt("pid")
-	text, roles := getTextTargetingFlags(cmd, "text")
+	text, roles, exact, scopeID := getTextTargetingFlags(cmd, "text")
 
 	hasID := cmd.Flags().Changed("id")
 	hasText := text != ""
@@ -81,7 +83,7 @@ func runSetValue(cmd *cobra.Command, args []string) error {
 
 	// Resolve text to element ID if needed
 	if hasText && !hasID {
-		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles)
+		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles, exact, scopeID)
 		if err != nil {
 			return err
 		}
@@ -103,11 +105,19 @@ func runSetValue(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Post-read: include full UI state in agent format
+	postRead, postReadDelay := getPostReadFlags(cmd)
+	var state string
+	if postRead {
+		state = readPostActionState(provider, appName, window, windowID, pid, postReadDelay)
+	}
+
 	return output.Print(SetValueResult{
 		OK:        true,
 		Action:    "set-value",
 		ID:        id,
 		Value:     value,
 		Attribute: attribute,
+		State:     state,
 	})
 }

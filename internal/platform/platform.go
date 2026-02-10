@@ -47,3 +47,10 @@ type ValueSetter interface {
 	// by its sequential ID within the given read scope.
 	SetValue(opts SetValueOptions) error
 }
+
+// ClipboardManager reads and writes the system clipboard.
+type ClipboardManager interface {
+	GetText() (string, error)
+	SetText(text string) error
+	Clear() error
+}

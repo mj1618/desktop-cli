@@ -74,7 +74,7 @@ func runScroll(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid direction %q: use up, down, left, or right", direction)
 	}
 
-	text, roles := getTextTargetingFlags(cmd, "text")
+	text, roles, exact, scopeID := getTextTargetingFlags(cmd, "text")
 	hasText := text != ""
 
 	// If --text specified, resolve element by text content
@@ -82,7 +82,7 @@ func runScroll(cmd *cobra.Command, args []string) error {
 		if appName == "" && window == "" {
 			return fmt.Errorf("--text requires --app or --window to scope the element lookup")
 		}
-		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, text, roles)
+		elem, _, err := resolveElementByText(provider, appName, window, 0, 0, text, roles, exact, scopeID)
 		if err != nil {
 			return err
 		}
