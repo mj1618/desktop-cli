@@ -10,13 +10,17 @@ import (
 
 // ActionResult is the YAML output of a successful action command.
 type ActionResult struct {
-	OK      bool          `yaml:"ok"                 json:"ok"`
-	Action  string        `yaml:"action"             json:"action"`
-	ID      int           `yaml:"id"                 json:"id"`
-	Name    string        `yaml:"name"               json:"name"`
-	Target  *ElementInfo  `yaml:"target,omitempty"   json:"target,omitempty"`
-	Display []ElementInfo `yaml:"display,omitempty"  json:"display,omitempty"`
-	State   string        `yaml:"state,omitempty"    json:"state,omitempty"`
+	OK          bool          `yaml:"ok"                     json:"ok"`
+	Action      string        `yaml:"action"                 json:"action"`
+	ID          int           `yaml:"id"                     json:"id"`
+	Name        string        `yaml:"name"                   json:"name"`
+	Target      *ElementInfo  `yaml:"target,omitempty"       json:"target,omitempty"`
+	Verified    *bool         `yaml:"verified,omitempty"     json:"verified,omitempty"`
+	Retried     *bool         `yaml:"retried,omitempty"      json:"retried,omitempty"`
+	RetryMethod string        `yaml:"retry_method,omitempty" json:"retry_method,omitempty"`
+	RetryReason string        `yaml:"retry_reason,omitempty" json:"retry_reason,omitempty"`
+	Display     []ElementInfo `yaml:"display,omitempty"      json:"display,omitempty"`
+	State       string        `yaml:"state,omitempty"        json:"state,omitempty"`
 }
 
 var actionCmd = &cobra.Command{
@@ -48,8 +52,10 @@ func init() {
 	actionCmd.Flags().Int("window-id", 0, "Scope to window by system ID")
 	actionCmd.Flags().Int("pid", 0, "Scope to process by PID")
 	addTextTargetingFlags(actionCmd, "text", "Find element by text and perform action (case-insensitive match on title/value/description)")
+	addRefFlag(actionCmd)
 	actionCmd.Flags().Bool("no-display", false, "Skip collecting display elements in the response")
 	addPostReadFlags(actionCmd)
+	addVerifyFlags(actionCmd)
 }
 
 func runAction(cmd *cobra.Command, args []string) error {
@@ -71,26 +77,55 @@ func runAction(cmd *cobra.Command, args []string) error {
 
 	hasID := cmd.Flags().Changed("id")
 	hasText := text != ""
+	ref, _ := cmd.Flags().GetString("ref")
+	hasRef := ref != ""
 
-	if !hasID && !hasText {
-		return fmt.Errorf("specify --id or --text to target an element")
+	if !hasID && !hasText && !hasRef {
+		return fmt.Errorf("specify --id, --text, or --ref to target an element")
 	}
 
 	if err := requireScope(appName, window, windowID, pid); err != nil {
 		return err
 	}
 
-	// Resolve target and capture pre-action snapshot
+	vOpts := getVerifyFlags(cmd)
+	prOpts := getPostReadOptions(cmd)
+	var preSnapshot elementSnapshot
 	var preActionTarget *ElementInfo
-	if hasText && !hasID {
+
+	// Resolve target and capture pre-action snapshot
+	if hasRef && !hasID {
+		elem, _, err := resolveElementByRef(provider, appName, window, windowID, pid, ref)
+		if err != nil {
+			return err
+		}
+		id = elem.ID
+		preActionTarget = elementInfoFromElement(elem)
+		if vOpts.Verify {
+			preSnapshot = snapshotElement(elem)
+		}
+	} else if hasText && !hasID {
 		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles, exact, scopeID)
 		if err != nil {
 			return err
 		}
 		id = elem.ID
 		preActionTarget = elementInfoFromElement(elem)
+		if vOpts.Verify {
+			preSnapshot = snapshotElement(elem)
+		}
 	} else {
 		preActionTarget = readElementByID(provider, appName, window, windowID, pid, id)
+		if vOpts.Verify && preActionTarget != nil {
+			// Re-read to get full element for snapshot
+			if elements, readErr := provider.Reader.ReadElements(platform.ReadOptions{
+				App: appName, Window: window, WindowID: windowID, PID: pid,
+			}); readErr == nil {
+				if el := findElementByID(elements, id); el != nil {
+					preSnapshot = snapshotElement(el)
+				}
+			}
+		}
 	}
 
 	opts := platform.ActionOptions{
@@ -106,19 +141,33 @@ func runAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Verification: action has no fallback chain (already the most reliable method)
+	var vr verifyResult
+	if vOpts.Verify && preSnapshot.Exists {
+		vr = verifyAction(provider, preSnapshot, vOpts, appName, window, windowID, pid, nil, prOpts.MaxElements)
+	}
+
 	// Read display elements after the action (e.g. Calculator display)
 	noDisplay, _ := cmd.Flags().GetBool("no-display")
-	postRead, postReadDelay := getPostReadFlags(cmd)
+
+	var targetBounds [4]int
+	if preActionTarget != nil {
+		targetBounds = preActionTarget.Bounds
+	}
 
 	var display []ElementInfo
-	if !noDisplay && !postRead {
-		display = readDisplayElements(provider, appName, window, windowID, pid)
+	if !noDisplay && !prOpts.PostRead {
+		display = readDisplayElements(provider, appName, window, windowID, pid, targetBounds)
 	}
 
 	// Post-read: include full UI state in agent format
 	var state string
-	if postRead {
-		state = readPostActionState(provider, appName, window, windowID, pid, postReadDelay)
+	if prOpts.PostRead {
+		if vr.PostState != "" {
+			state = vr.PostState
+		} else {
+			state = readPostActionState(provider, appName, window, windowID, pid, prOpts.Delay, prOpts.MaxElements)
+		}
 	}
 
 	result := ActionResult{
@@ -129,6 +178,14 @@ func runAction(cmd *cobra.Command, args []string) error {
 		Target:  preActionTarget,
 		Display: display,
 		State:   state,
+	}
+	if vOpts.Verify && preSnapshot.Exists {
+		result.Verified = boolPtr(vr.Verified)
+		if vr.Retried {
+			result.Retried = boolPtr(true)
+			result.RetryMethod = vr.RetryMethod
+			result.RetryReason = vr.RetryReason
+		}
 	}
 
 	return output.Print(result)

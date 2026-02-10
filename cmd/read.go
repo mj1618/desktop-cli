@@ -1,7 +1,13 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
+	"os"
 	"strings"
 	"time"
 
@@ -36,6 +42,8 @@ func init() {
 	readCmd.Flags().Bool("focused", false, "Only return the currently focused element")
 	readCmd.Flags().Int("scope-id", 0, "Limit to descendants of this element ID")
 	readCmd.Flags().Bool("children", false, "Show only direct children of the matched element (use with --text or --scope-id)")
+	readCmd.Flags().Int("max-elements", 0, "Max elements in agent format output (0 = unlimited; auto-set to 200 for web content)")
+	readCmd.Flags().Int64("since", 0, "Return only changes since this timestamp (from a previous read's ts field)")
 
 	// Screenshot format flags (only used with --format screenshot)
 	readCmd.Flags().Float64("scale", 0.25, "Screenshot scale factor 0.1-1.0 (default 0.25 for token efficiency, only with --format screenshot)")
@@ -66,6 +74,8 @@ func runRead(cmd *cobra.Command, args []string) error {
 	focused, _ := cmd.Flags().GetBool("focused")
 	scopeID, _ := cmd.Flags().GetInt("scope-id")
 	children, _ := cmd.Flags().GetBool("children")
+	maxElements, _ := cmd.Flags().GetInt("max-elements")
+	since, _ := cmd.Flags().GetInt64("since")
 
 	var roles []string
 	if rolesStr != "" {
@@ -131,9 +141,18 @@ func runRead(cmd *cobra.Command, args []string) error {
 		if output.OutputFormat == output.FormatAgent && !cmd.Root().PersistentFlags().Changed("format") {
 			smartDefaults = append(smartDefaults, "agent format (piped output)")
 		}
+
+		// Auto max-elements for agent format on web content (unless explicitly set)
+		if output.OutputFormat == output.FormatAgent && hasWeb && !cmd.Flags().Changed("max-elements") && maxElements == 0 {
+			maxElements = 200
+			smartDefaults = append(smartDefaults, "max-elements=200 (web content)")
+		}
 	}
 
 	smartDefaultsStr := strings.Join(smartDefaults, ", ")
+
+	// Set max elements for agent format output
+	output.MaxAgentElements = maxElements
 
 	// Scope to descendants of a specific element
 	if scopeID > 0 {
@@ -179,28 +198,70 @@ func runRead(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Screenshot format: combined visual + structured output
+	if output.OutputFormat == output.FormatScreenshot {
+		return runReadScreenshot(cmd, provider, appName, window, windowID, pid, windowTitle, elements, prune)
+	}
+
+	// Apply pruning before flattening (applies to all output paths)
+	if prune {
+		elements = model.PruneEmptyGroups(elements)
+	}
+
+	// Generate stable refs before flattening so they appear in YAML/JSON output
+	model.GenerateRefs(elements)
+
+	// Flatten elements (needed for --since diff and --flat output)
+	flatElements := model.FlattenElements(elements)
+	if flat && text != "" {
+		flatElements = model.FilterFlatByText(flatElements, text)
+	}
+	if flat && prune {
+		flatElements = model.PruneEmptyGroupsFlat(flatElements)
+	}
+
+	now := time.Now().Unix()
+
+	// Clean old snapshots in the background
+	go model.CleanSnapshots(appName, 60*time.Second)
+
+	// Diff mode: return only changes since the given timestamp
+	if since > 0 {
+		prevElements, err := model.LoadSnapshot(appName, since)
+		if err != nil {
+			return fmt.Errorf("no snapshot found for ts %d: %w", since, err)
+		}
+		diff := model.DiffElementsByHash(prevElements, flatElements)
+
+		// Save current snapshot for future diffs
+		model.SaveSnapshot(appName, now, flatElements)
+
+		result := output.ReadDiffResult{
+			App:           appName,
+			PID:           pid,
+			Window:        windowTitle,
+			SmartDefaults: smartDefaultsStr,
+			TS:            now,
+			Since:         since,
+			Diff:          diff,
+		}
+		return output.Print(result)
+	}
+
+	// Save snapshot for future --since calls
+	model.SaveSnapshot(appName, now, flatElements)
+
 	// Output as flat list or tree
 	if flat {
-		flatElements := model.FlattenElements(elements)
-		if text != "" {
-			flatElements = model.FilterFlatByText(flatElements, text)
-		}
-		if prune {
-			flatElements = model.PruneEmptyGroupsFlat(flatElements)
-		}
 		result := output.ReadFlatResult{
 			App:           appName,
 			PID:           pid,
 			Window:        windowTitle,
 			SmartDefaults: smartDefaultsStr,
-			TS:            time.Now().Unix(),
+			TS:            now,
 			Elements:      flatElements,
 		}
 		return output.Print(result)
-	}
-
-	if prune {
-		elements = model.PruneEmptyGroups(elements)
 	}
 
 	result := output.ReadResult{
@@ -208,9 +269,168 @@ func runRead(cmd *cobra.Command, args []string) error {
 		PID:           pid,
 		Window:        windowTitle,
 		SmartDefaults: smartDefaultsStr,
-		TS:            time.Now().Unix(),
+		TS:            now,
 		Elements:      elements,
 	}
 
 	return output.Print(result)
+}
+
+// runReadScreenshot implements the --format screenshot mode: captures an annotated
+// screenshot with [id] labels and returns it alongside a structured element list.
+func runReadScreenshot(cmd *cobra.Command, provider *platform.Provider, appName, window string, windowID, pid int, windowTitle string, elements []model.Element, prune bool) error {
+	if provider.Screenshotter == nil {
+		return fmt.Errorf("screenshot not supported on this platform")
+	}
+
+	// Parse screenshot-specific flags
+	scale, _ := cmd.Flags().GetFloat64("scale")
+	screenshotOutput, _ := cmd.Flags().GetString("screenshot-output")
+	imgFormat, _ := cmd.Flags().GetString("image-format")
+	quality, _ := cmd.Flags().GetInt("quality")
+	allElements, _ := cmd.Flags().GetBool("all-elements")
+
+	// Resolve the target window for screenshot capture and bounds mapping
+	listOpts := platform.ListOptions{}
+	if appName != "" {
+		listOpts.App = appName
+	}
+	if pid != 0 {
+		listOpts.PID = pid
+	}
+
+	allWindows, err := provider.Reader.ListWindows(listOpts)
+	if err != nil {
+		return fmt.Errorf("failed to list windows: %w", err)
+	}
+	if len(allWindows) == 0 {
+		return fmt.Errorf("no windows available")
+	}
+
+	var targetWindow model.Window
+	if windowID != 0 {
+		found := false
+		for _, w := range allWindows {
+			if w.ID == windowID {
+				targetWindow = w
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("window ID %d not found", windowID)
+		}
+	} else if window != "" {
+		found := false
+		for _, w := range allWindows {
+			if strings.Contains(strings.ToLower(w.Title), strings.ToLower(window)) {
+				targetWindow = w
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("no window found matching title %q", window)
+		}
+	} else {
+		targetWindow = allWindows[0]
+	}
+
+	// Filter elements for annotation: default to interactive only unless --all-elements
+	var annotationElements []model.Element
+	if allElements {
+		annotationElements = elements
+	} else {
+		interactiveRoles := model.ExpandRoles([]string{"interactive"})
+		annotationElements = model.FilterElements(elements, interactiveRoles, nil)
+	}
+
+	if prune {
+		annotationElements = model.PruneEmptyGroups(annotationElements)
+	}
+
+	// Flatten for annotation
+	flatAnnotation := flattenElementsForAnnotation(annotationElements)
+
+	// Filter out zero-bound elements (off-screen/virtualized)
+	var visibleAnnotation []model.Element
+	for _, el := range flatAnnotation {
+		if el.Bounds[2] > 0 && el.Bounds[3] > 0 {
+			visibleAnnotation = append(visibleAnnotation, el)
+		}
+	}
+
+	// Capture screenshot
+	screenshotOpts := platform.ScreenshotOptions{
+		WindowID: targetWindow.ID,
+		Format:   imgFormat,
+		Quality:  quality,
+		Scale:    scale,
+	}
+
+	imageData, err := provider.Screenshotter.CaptureWindow(screenshotOpts)
+	if err != nil {
+		return fmt.Errorf("failed to capture screenshot: %w", err)
+	}
+
+	// Decode image
+	var img image.Image
+	switch imgFormat {
+	case "jpg", "jpeg":
+		img, err = jpeg.Decode(bytes.NewReader(imageData))
+	default:
+		img, err = png.Decode(bytes.NewReader(imageData))
+	}
+	if err != nil {
+		return fmt.Errorf("failed to decode image: %w", err)
+	}
+
+	// Annotate with [id] labels
+	annotatedImg, err := AnnotateScreenshotWithMode(img, visibleAnnotation, targetWindow.Bounds, LabelIDs)
+	if err != nil {
+		return fmt.Errorf("failed to annotate screenshot: %w", err)
+	}
+
+	// Encode annotated image
+	buf := &bytes.Buffer{}
+	switch imgFormat {
+	case "jpg", "jpeg":
+		err = jpeg.Encode(buf, annotatedImg, &jpeg.Options{Quality: quality})
+	default:
+		err = png.Encode(buf, annotatedImg)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to encode annotated image: %w", err)
+	}
+	outputData := buf.Bytes()
+
+	// Generate agent-format element list
+	agentStr := output.FormatAgentString(appName, targetWindow.PID, windowTitle, elements)
+
+	// If --screenshot-output specified, save image to file
+	if screenshotOutput != "" {
+		if err := os.WriteFile(screenshotOutput, outputData, 0644); err != nil {
+			return fmt.Errorf("failed to write screenshot: %w", err)
+		}
+	}
+
+	// Build result
+	imageStr := ""
+	if screenshotOutput == "" {
+		imageStr = base64.StdEncoding.EncodeToString(outputData)
+	} else {
+		imageStr = screenshotOutput
+	}
+
+	result := output.ScreenshotReadResult{
+		OK:       true,
+		Action:   "read",
+		App:      appName,
+		PID:      targetWindow.PID,
+		Window:   windowTitle,
+		Image:    imageStr,
+		Elements: agentStr,
+	}
+
+	return output.PrintYAML(result)
 }

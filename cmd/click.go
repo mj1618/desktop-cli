@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/mj1618/desktop-cli/internal/model"
 	"github.com/mj1618/desktop-cli/internal/output"
 	"github.com/mj1618/desktop-cli/internal/platform"
 	"github.com/spf13/cobra"
@@ -10,14 +11,18 @@ import (
 
 // ClickResult is the YAML output of a successful click.
 type ClickResult struct {
-	OK      bool          `yaml:"ok"                json:"ok"`
-	Action  string        `yaml:"action"            json:"action"`
-	X       int           `yaml:"x"                 json:"x"`
-	Y       int           `yaml:"y"                 json:"y"`
-	Button  string        `yaml:"button"            json:"button"`
-	Count   int           `yaml:"count"             json:"count"`
-	Display []ElementInfo `yaml:"display,omitempty" json:"display,omitempty"`
-	State   string        `yaml:"state,omitempty"   json:"state,omitempty"`
+	OK          bool          `yaml:"ok"                     json:"ok"`
+	Action      string        `yaml:"action"                 json:"action"`
+	X           int           `yaml:"x"                      json:"x"`
+	Y           int           `yaml:"y"                      json:"y"`
+	Button      string        `yaml:"button"                 json:"button"`
+	Count       int           `yaml:"count"                  json:"count"`
+	Verified    *bool         `yaml:"verified,omitempty"     json:"verified,omitempty"`
+	Retried     *bool         `yaml:"retried,omitempty"      json:"retried,omitempty"`
+	RetryMethod string        `yaml:"retry_method,omitempty" json:"retry_method,omitempty"`
+	RetryReason string        `yaml:"retry_reason,omitempty" json:"retry_reason,omitempty"`
+	Display     []ElementInfo `yaml:"display,omitempty"      json:"display,omitempty"`
+	State       string        `yaml:"state,omitempty"        json:"state,omitempty"`
 }
 
 var clickCmd = &cobra.Command{
@@ -37,10 +42,12 @@ func init() {
 	clickCmd.Flags().String("app", "", "Scope to application (used with --id or --text)")
 	clickCmd.Flags().String("window", "", "Scope to window (used with --id or --text)")
 	addTextTargetingFlags(clickCmd, "text", "Find and click element by text (case-insensitive match on title/value/description)")
+	addRefFlag(clickCmd)
 	clickCmd.Flags().Bool("near", false, "Click nearest interactive element to the text match (useful when text labels are not themselves clickable)")
 	clickCmd.Flags().String("near-direction", "", "Search direction for --near: left, right, above, below (default: prefer left, then any)")
 	clickCmd.Flags().Bool("no-display", false, "Skip collecting display elements in the response")
 	addPostReadFlags(clickCmd)
+	addVerifyFlags(clickCmd)
 }
 
 func runClick(cmd *cobra.Command, args []string) error {
@@ -71,32 +78,82 @@ func runClick(cmd *cobra.Command, args []string) error {
 	hasID := cmd.Flags().Changed("id")
 	text, roles, exact, scopeID := getTextTargetingFlags(cmd, "text")
 	hasText := text != ""
+	ref, _ := cmd.Flags().GetString("ref")
+	hasRef := ref != ""
 
 	near, _ := cmd.Flags().GetBool("near")
 	nearDirection, _ := cmd.Flags().GetString("near-direction")
 
-	if hasText {
+	vOpts := getVerifyFlags(cmd)
+	prOpts := getPostReadOptions(cmd)
+	var preSnapshot elementSnapshot
+	var resolvedElem *model.Element // kept for verify fallback (action press)
+	var targetBounds [4]int         // bounds of clicked element for display proximity
+
+	if hasRef {
+		// Stable ref targeting mode
+		if appName == "" && window == "" {
+			return fmt.Errorf("--ref requires --app or --window to scope the element lookup")
+		}
+		elem, _, err := resolveElementByRef(provider, appName, window, 0, 0, ref)
+		if err != nil {
+			return err
+		}
+		targetBounds = elem.Bounds
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+		if vOpts.Verify {
+			resolvedElem = elem
+			preSnapshot = snapshotElement(elem)
+		}
+	} else if hasText {
 		// Text targeting mode: find element by text content
 		if appName == "" && window == "" {
 			return fmt.Errorf("--text requires --app or --window to scope the element lookup")
 		}
-		elem, allElements, err := resolveElementByText(provider, appName, window, 0, 0, text, roles, exact, scopeID)
-		if err != nil {
-			return err
-		}
 
 		if near {
+			// --near mode: get ALL text matches, pick the best one for proximity search.
+			// This avoids the ambiguity error from resolveElementByText and prefers
+			// matches in the main content area over sidebar/preview matches.
+			allMatches, allElements, err := resolveAllTextMatches(provider, appName, window, 0, 0, text, roles, exact, scopeID)
+			if err != nil {
+				return err
+			}
+
+			elem := pickBestNearMatch(allElements, allMatches)
+			targetBounds = elem.Bounds
+			if vOpts.Verify {
+				resolvedElem = elem
+				preSnapshot = snapshotElement(elem)
+			}
+
 			// Find the nearest interactive element to the text match
 			nearest := findNearestInteractiveElement(allElements, elem, nearDirection)
 			if nearest != nil {
 				elem = nearest
+				targetBounds = elem.Bounds
 				x = elem.Bounds[0] + elem.Bounds[2]/2
 				y = elem.Bounds[1] + elem.Bounds[3]/2
+				if vOpts.Verify {
+					resolvedElem = elem
+					preSnapshot = snapshotElement(elem)
+				}
 			} else {
 				// No nearby interactive element found — use offset-based fallback
 				x, y = nearFallbackOffset(elem, nearDirection)
 			}
 		} else {
+			elem, _, err := resolveElementByText(provider, appName, window, 0, 0, text, roles, exact, scopeID)
+			if err != nil {
+				return err
+			}
+
+			targetBounds = elem.Bounds
+			if vOpts.Verify {
+				resolvedElem = elem
+				preSnapshot = snapshotElement(elem)
+			}
 			x = elem.Bounds[0] + elem.Bounds[2]/2
 			y = elem.Bounds[1] + elem.Bounds[3]/2
 		}
@@ -123,11 +180,15 @@ func runClick(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("element with id %d not found", id)
 		}
 
-		// Compute center of bounding box
+		targetBounds = elem.Bounds
 		x = elem.Bounds[0] + elem.Bounds[2]/2
 		y = elem.Bounds[1] + elem.Bounds[3]/2
+		if vOpts.Verify {
+			resolvedElem = elem
+			preSnapshot = snapshotElement(elem)
+		}
 	} else if !hasCoords {
-		return fmt.Errorf("specify --text, --id, or --x/--y coordinates")
+		return fmt.Errorf("specify --text, --ref, --id, or --x/--y coordinates")
 	}
 
 	if provider.Inputter == nil {
@@ -138,29 +199,69 @@ func runClick(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Verification: check if UI changed, retry with fallbacks if not
+	var vr verifyResult
+	if vOpts.Verify && preSnapshot.Exists {
+		var fallbacks []fallbackAction
+		// Fallback 1: accessibility "press" action
+		if provider.ActionPerformer != nil && resolvedElem != nil {
+			elemID := resolvedElem.ID
+			fallbacks = append(fallbacks, fallbackAction{
+				Method: "action",
+				Execute: func() error {
+					return provider.ActionPerformer.PerformAction(platform.ActionOptions{
+						App: appName, Window: window, ID: elemID, Action: "press",
+					})
+				},
+			})
+		}
+		// Fallback 2: offset click (+2px)
+		fallbacks = append(fallbacks, fallbackAction{
+			Method: "offset-click",
+			Execute: func() error {
+				return provider.Inputter.Click(x+2, y+2, button, count)
+			},
+		})
+		vr = verifyAction(provider, preSnapshot, vOpts, appName, window, 0, 0, fallbacks, prOpts.MaxElements)
+	}
+
 	// Read display elements after the click (e.g. Calculator display)
 	noDisplay, _ := cmd.Flags().GetBool("no-display")
-	postRead, postReadDelay := getPostReadFlags(cmd)
 
 	var display []ElementInfo
-	if !noDisplay && !postRead && (appName != "" || window != "") {
-		display = readDisplayElements(provider, appName, window, 0, 0)
+	if !noDisplay && !prOpts.PostRead && (appName != "" || window != "") {
+		display = readDisplayElements(provider, appName, window, 0, 0, targetBounds)
 	}
 
 	// Post-read: include full UI state in agent format
 	var state string
-	if postRead && (appName != "" || window != "") {
-		state = readPostActionState(provider, appName, window, 0, 0, postReadDelay)
+	if prOpts.PostRead && (appName != "" || window != "") {
+		if vr.PostState != "" {
+			// Reuse the tree already read during verification
+			state = vr.PostState
+		} else {
+			state = readPostActionState(provider, appName, window, 0, 0, prOpts.Delay, prOpts.MaxElements)
+		}
 	}
 
-	return output.Print(ClickResult{
-		OK:      true,
-		Action:  "click",
-		X:       x,
-		Y:       y,
-		Button:  buttonStr,
-		Count:   count,
-		Display: display,
-		State:   state,
-	})
+	result := ClickResult{
+		OK:     true,
+		Action: "click",
+		X:      x,
+		Y:      y,
+		Button: buttonStr,
+		Count:  count,
+	}
+	if vOpts.Verify && preSnapshot.Exists {
+		result.Verified = boolPtr(vr.Verified)
+		if vr.Retried {
+			result.Retried = boolPtr(true)
+			result.RetryMethod = vr.RetryMethod
+			result.RetryReason = vr.RetryReason
+		}
+	}
+	result.Display = display
+	result.State = state
+
+	return output.Print(result)
 }

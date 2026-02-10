@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
+	"github.com/mj1618/desktop-cli/internal/model"
 	"github.com/mj1618/desktop-cli/internal/output"
 	"github.com/mj1618/desktop-cli/internal/platform"
 	"github.com/spf13/cobra"
@@ -10,12 +12,16 @@ import (
 
 // SetValueResult is the output of a successful set-value command.
 type SetValueResult struct {
-	OK        bool   `yaml:"ok"                json:"ok"`
-	Action    string `yaml:"action"            json:"action"`
-	ID        int    `yaml:"id"                json:"id"`
-	Value     string `yaml:"value"             json:"value"`
-	Attribute string `yaml:"attribute"         json:"attribute"`
-	State     string `yaml:"state,omitempty"   json:"state,omitempty"`
+	OK          bool   `yaml:"ok"                     json:"ok"`
+	Action      string `yaml:"action"                 json:"action"`
+	ID          int    `yaml:"id"                     json:"id"`
+	Value       string `yaml:"value"                  json:"value"`
+	Attribute   string `yaml:"attribute"               json:"attribute"`
+	Verified    *bool  `yaml:"verified,omitempty"     json:"verified,omitempty"`
+	Retried     *bool  `yaml:"retried,omitempty"      json:"retried,omitempty"`
+	RetryMethod string `yaml:"retry_method,omitempty" json:"retry_method,omitempty"`
+	RetryReason string `yaml:"retry_reason,omitempty" json:"retry_reason,omitempty"`
+	State       string `yaml:"state,omitempty"        json:"state,omitempty"`
 }
 
 var setValueCmd = &cobra.Command{
@@ -49,7 +55,9 @@ func init() {
 	setValueCmd.Flags().Int("window-id", 0, "Scope to window by system ID")
 	setValueCmd.Flags().Int("pid", 0, "Scope to process by PID")
 	addTextTargetingFlags(setValueCmd, "text", "Find element by text and set its value (case-insensitive match on title/value/description)")
+	addRefFlag(setValueCmd)
 	addPostReadFlags(setValueCmd)
+	addVerifyFlags(setValueCmd)
 }
 
 func runSetValue(cmd *cobra.Command, args []string) error {
@@ -72,22 +80,50 @@ func runSetValue(cmd *cobra.Command, args []string) error {
 
 	hasID := cmd.Flags().Changed("id")
 	hasText := text != ""
+	ref, _ := cmd.Flags().GetString("ref")
+	hasRef := ref != ""
 
-	if !hasID && !hasText {
-		return fmt.Errorf("specify --id or --text to target an element")
+	if !hasID && !hasText && !hasRef {
+		return fmt.Errorf("specify --id, --text, or --ref to target an element")
 	}
 
 	if err := requireScope(appName, window, windowID, pid); err != nil {
 		return err
 	}
 
-	// Resolve text to element ID if needed
-	if hasText && !hasID {
+	vOpts := getVerifyFlags(cmd)
+	prOpts := getPostReadOptions(cmd)
+	var preSnapshot elementSnapshot
+	var resolvedElem *model.Element
+
+	// Resolve ref or text to element ID if needed
+	if hasRef && !hasID {
+		elem, _, err := resolveElementByRef(provider, appName, window, windowID, pid, ref)
+		if err != nil {
+			return err
+		}
+		id = elem.ID
+		resolvedElem = elem
+	} else if hasText && !hasID {
 		elem, _, err := resolveElementByText(provider, appName, window, windowID, pid, text, roles, exact, scopeID)
 		if err != nil {
 			return err
 		}
 		id = elem.ID
+		resolvedElem = elem
+	} else if hasID {
+		// Re-read to get full element for verify snapshot
+		if provider.Reader != nil {
+			if elements, readErr := provider.Reader.ReadElements(platform.ReadOptions{
+				App: appName, Window: window, WindowID: windowID, PID: pid,
+			}); readErr == nil {
+				resolvedElem = findElementByID(elements, id)
+			}
+		}
+	}
+
+	if vOpts.Verify && resolvedElem != nil {
+		preSnapshot = snapshotElement(resolvedElem)
 	}
 
 	opts := platform.SetValueOptions{
@@ -105,19 +141,59 @@ func runSetValue(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Post-read: include full UI state in agent format
-	postRead, postReadDelay := getPostReadFlags(cmd)
-	var state string
-	if postRead {
-		state = readPostActionState(provider, appName, window, windowID, pid, postReadDelay)
+	// Verification: retry with type (keystroke simulation) as fallback
+	var vr verifyResult
+	if vOpts.Verify && preSnapshot.Exists {
+		var fallbacks []fallbackAction
+		if provider.Inputter != nil && resolvedElem != nil && attribute == "value" {
+			elemBounds := resolvedElem.Bounds
+			fallbacks = append(fallbacks, fallbackAction{
+				Method: "type",
+				Execute: func() error {
+					// Click to focus, select all, then type the value
+					cx := elemBounds[0] + elemBounds[2]/2
+					cy := elemBounds[1] + elemBounds[3]/2
+					if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
+						return err
+					}
+					time.Sleep(50 * time.Millisecond)
+					if err := provider.Inputter.KeyCombo([]string{"cmd", "a"}); err != nil {
+						return err
+					}
+					time.Sleep(30 * time.Millisecond)
+					return provider.Inputter.TypeText(value, 0)
+				},
+			})
+		}
+		vr = verifyAction(provider, preSnapshot, vOpts, appName, window, windowID, pid, fallbacks, prOpts.MaxElements)
 	}
 
-	return output.Print(SetValueResult{
+	// Post-read: include full UI state in agent format
+	var state string
+	if prOpts.PostRead {
+		if vr.PostState != "" {
+			state = vr.PostState
+		} else {
+			state = readPostActionState(provider, appName, window, windowID, pid, prOpts.Delay, prOpts.MaxElements)
+		}
+	}
+
+	result := SetValueResult{
 		OK:        true,
 		Action:    "set-value",
 		ID:        id,
 		Value:     value,
 		Attribute: attribute,
 		State:     state,
-	})
+	}
+	if vOpts.Verify && preSnapshot.Exists {
+		result.Verified = boolPtr(vr.Verified)
+		if vr.Retried {
+			result.Retried = boolPtr(true)
+			result.RetryMethod = vr.RetryMethod
+			result.RetryReason = vr.RetryReason
+		}
+	}
+
+	return output.Print(result)
 }

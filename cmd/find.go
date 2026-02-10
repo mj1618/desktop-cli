@@ -115,7 +115,7 @@ func runFind(cmd *cobra.Command, args []string) error {
 			continue // skip windows that fail to read
 		}
 
-		found := collectLeafMatches(elements, textLower, roleSet, exact)
+		found := filterVisibleElements(collectLeafMatches(elements, textLower, roleSet, exact))
 		if len(found) == 0 {
 			continue
 		}

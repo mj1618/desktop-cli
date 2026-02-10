@@ -287,10 +287,13 @@ func buildElementTree(cElements *C.AXElementInfo, cCount C.int) []model.Element 
 			enabled = &f
 		}
 
+		subrole := C.GoString(ce.subrole)
+
 		entries[i] = elemEntry{
 			elem: model.Element{
 				ID:          id,
 				Role:        role,
+				Subrole:     subrole,
 				Title:       C.GoString(ce.title),
 				Value:       C.GoString(ce.value),
 				Description: C.GoString(ce.description),

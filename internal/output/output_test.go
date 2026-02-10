@@ -280,7 +280,7 @@ func TestPrintAgent_TreeInput(t *testing.T) {
 
 	out := captureStdout(t, func() error { return PrintAgent(result) })
 
-	if !strings.Contains(out, `[2] btn "Click"`) {
+	if !strings.Contains(out, `[2|click] btn "Click"`) {
 		t.Errorf("should contain btn from tree, got:\n%s", out)
 	}
 	if strings.Contains(out, "[3]") {

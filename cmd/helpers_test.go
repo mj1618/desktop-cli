@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/mj1618/desktop-cli/internal/model"
@@ -608,5 +609,549 @@ func TestMaxDisplayElements(t *testing.T) {
 	}
 	if len(displays) != maxDisplayElements {
 		t.Fatalf("expected capped to %d, got %d", maxDisplayElements, len(displays))
+	}
+}
+
+func TestDistanceToBounds(t *testing.T) {
+	// Element at (100,100,20,20) center=(110,110), target at (200,200,20,20) center=(210,210)
+	el := &model.Element{Bounds: [4]int{100, 100, 20, 20}}
+	target := [4]int{200, 200, 20, 20}
+	d := distanceToBounds(el, target)
+	// Distance between (110,110) and (210,210) = sqrt(100^2 + 100^2) ≈ 141.42
+	if d < 141 || d > 142 {
+		t.Errorf("expected distance ~141.42, got %f", d)
+	}
+
+	// Same position → distance 0
+	el2 := &model.Element{Bounds: [4]int{200, 200, 20, 20}}
+	d2 := distanceToBounds(el2, target)
+	if d2 != 0 {
+		t.Errorf("expected distance 0, got %f", d2)
+	}
+}
+
+func TestDisplayElementsProximitySorting(t *testing.T) {
+	// Simulate a window with sidebar elements (left, y=0..500) and content elements (right, y=300..500).
+	// Target is in the content area at (800,400,100,20).
+	// Without proximity sorting, the first 20 would all be sidebar items.
+	// With proximity sorting, content-area items should be included.
+
+	var sidebarElements []model.Element
+	for i := 0; i < 25; i++ {
+		sidebarElements = append(sidebarElements, model.Element{
+			ID:     i + 1,
+			Role:   "txt",
+			Value:  fmt.Sprintf("sidebar %d", i),
+			Bounds: [4]int{50, i * 20, 150, 18}, // left side
+		})
+	}
+	var contentElements []model.Element
+	for i := 0; i < 10; i++ {
+		contentElements = append(contentElements, model.Element{
+			ID:     100 + i,
+			Role:   "txt",
+			Value:  fmt.Sprintf("content %d", i),
+			Bounds: [4]int{800, 300 + i*20, 200, 18}, // right side, near target
+		})
+	}
+
+	tree := []model.Element{
+		{ID: 0, Role: "group", Children: sidebarElements},
+		{ID: 50, Role: "group", Children: contentElements},
+	}
+
+	displays := collectDisplayElements(tree)
+	if len(displays) != 35 {
+		t.Fatalf("expected 35 display elements, got %d", len(displays))
+	}
+
+	// Sort by proximity to a target in the content area
+	targetBounds := [4]int{800, 400, 100, 20}
+	sort.Slice(displays, func(i, j int) bool {
+		return distanceToBounds(displays[i], targetBounds) < distanceToBounds(displays[j], targetBounds)
+	})
+
+	// Cap to maxDisplayElements
+	if len(displays) > maxDisplayElements {
+		displays = displays[:maxDisplayElements]
+	}
+
+	// All 10 content elements should be in the result (they are closer to target)
+	contentCount := 0
+	for _, el := range displays {
+		if el.ID >= 100 {
+			contentCount++
+		}
+	}
+	if contentCount != 10 {
+		t.Errorf("expected all 10 content elements in result, got %d", contentCount)
+	}
+}
+
+// buildFlightsTree creates a simplified accessibility tree mimicking the
+// Chrome "Flights" search result scenario where many zero-height elements match.
+//
+//	root (id=1, window)
+//	├── visible link (id=2, lnk, desc="Flights", bounds 68x48)
+//	├── visible link (id=3, lnk, desc="Sydney To London Flights...", bounds 228x31)
+//	├── zero-height link (id=4, lnk, desc="Show flights on Google Flights", bounds 652x0)
+//	├── zero-height link (id=5, lnk, desc="Cheap Flights from Sydney...", bounds 460x0)
+//	├── zero-height link (id=6, lnk, desc="Find Cheap Flights...", bounds 493x0)
+//	├── zero-width link (id=7, lnk, desc="Flights deal", bounds 0x31)
+//	└── visible link (id=8, lnk, desc="Sydney to London Flights guide", bounds 400x31)
+func buildFlightsTree() []model.Element {
+	return []model.Element{
+		{
+			ID: 1, Role: "window", Title: "Google Chrome",
+			Children: []model.Element{
+				{ID: 2, Role: "lnk", Description: "Flights", Bounds: [4]int{417, 214, 68, 48}},
+				{ID: 3, Role: "lnk", Description: "Sydney To London Flights are cheap", Bounds: [4]int{310, 832, 228, 31}},
+				{ID: 4, Role: "lnk", Description: "Show flights on Google Flights", Bounds: [4]int{310, 1117, 652, 0}},
+				{ID: 5, Role: "lnk", Description: "Cheap Flights from Sydney to London", Bounds: [4]int{310, 1117, 460, 0}},
+				{ID: 6, Role: "lnk", Description: "Find Cheap Flights to London", Bounds: [4]int{310, 1117, 493, 0}},
+				{ID: 7, Role: "lnk", Description: "Flights deal", Bounds: [4]int{310, 1117, 0, 31}},
+				{ID: 8, Role: "lnk", Description: "Sydney to London Flights guide", Bounds: [4]int{310, 978, 400, 31}},
+			},
+		},
+	}
+}
+
+func TestFilterVisibleElements_RemovesZeroDimension(t *testing.T) {
+	tree := buildFlightsTree()
+	// "flights" matches all 7 links (id=2..8)
+	roles := map[string]bool{"lnk": true}
+	matches := collectLeafMatches(tree, "flights", roles, false)
+	if len(matches) != 7 {
+		t.Fatalf("expected 7 total matches, got %d", len(matches))
+	}
+
+	visible := filterVisibleElements(matches)
+	// Should exclude id=4 (height=0), id=5 (height=0), id=6 (height=0), id=7 (width=0)
+	if len(visible) != 3 {
+		t.Fatalf("expected 3 visible matches, got %d", len(visible))
+	}
+	for _, m := range visible {
+		if m.Bounds[2] == 0 || m.Bounds[3] == 0 {
+			t.Errorf("zero-dimension element should not be in visible results: id=%d bounds=(%d,%d,%d,%d)",
+				m.ID, m.Bounds[0], m.Bounds[1], m.Bounds[2], m.Bounds[3])
+		}
+	}
+}
+
+func TestFilterVisibleElements_AllVisible(t *testing.T) {
+	matches := []*model.Element{
+		{ID: 1, Role: "btn", Bounds: [4]int{0, 0, 100, 30}},
+		{ID: 2, Role: "btn", Bounds: [4]int{0, 40, 100, 30}},
+	}
+	visible := filterVisibleElements(matches)
+	if len(visible) != 2 {
+		t.Fatalf("expected 2 visible matches, got %d", len(visible))
+	}
+}
+
+func TestFilterVisibleElements_AllZero(t *testing.T) {
+	matches := []*model.Element{
+		{ID: 1, Role: "lnk", Bounds: [4]int{0, 0, 0, 30}},
+		{ID: 2, Role: "lnk", Bounds: [4]int{0, 0, 100, 0}},
+	}
+	visible := filterVisibleElements(matches)
+	if len(visible) != 0 {
+		t.Fatalf("expected 0 visible matches, got %d", len(visible))
+	}
+}
+
+func TestFilterVisibleElements_Empty(t *testing.T) {
+	visible := filterVisibleElements(nil)
+	if len(visible) != 0 {
+		t.Fatalf("expected 0 visible matches for nil input, got %d", len(visible))
+	}
+}
+
+// --- Verification helper tests ---
+
+func TestCountAllDescendants(t *testing.T) {
+	// Empty
+	if n := countAllDescendants(nil); n != 0 {
+		t.Errorf("expected 0, got %d", n)
+	}
+	// Flat
+	elems := []model.Element{{ID: 1}, {ID: 2}, {ID: 3}}
+	if n := countAllDescendants(elems); n != 3 {
+		t.Errorf("expected 3, got %d", n)
+	}
+	// Nested: 2 top-level + 1 child + 1 grandchild = 4
+	nested := []model.Element{
+		{ID: 1, Children: []model.Element{
+			{ID: 2, Children: []model.Element{
+				{ID: 3},
+			}},
+		}},
+		{ID: 4},
+	}
+	if n := countAllDescendants(nested); n != 4 {
+		t.Errorf("expected 4, got %d", n)
+	}
+}
+
+func TestSnapshotElement(t *testing.T) {
+	el := model.Element{
+		ID: 42, Title: "Submit", Value: "val", Focused: true, Selected: false,
+		Bounds:   [4]int{10, 20, 100, 30},
+		Children: []model.Element{{ID: 43}, {ID: 44}},
+	}
+	snap := snapshotElement(&el)
+	if snap.ID != 42 {
+		t.Errorf("ID: expected 42, got %d", snap.ID)
+	}
+	if snap.Title != "Submit" {
+		t.Errorf("Title: expected 'Submit', got %q", snap.Title)
+	}
+	if snap.Value != "val" {
+		t.Errorf("Value: expected 'val', got %q", snap.Value)
+	}
+	if !snap.Focused {
+		t.Error("expected Focused=true")
+	}
+	if snap.Selected {
+		t.Error("expected Selected=false")
+	}
+	if snap.Bounds != [4]int{10, 20, 100, 30} {
+		t.Errorf("Bounds: unexpected %v", snap.Bounds)
+	}
+	if snap.ChildCount != 2 {
+		t.Errorf("ChildCount: expected 2, got %d", snap.ChildCount)
+	}
+	if !snap.Exists {
+		t.Error("expected Exists=true")
+	}
+}
+
+func TestStateChanged_NoChange(t *testing.T) {
+	el := model.Element{
+		ID: 1, Title: "OK", Value: "v", Focused: true, Selected: false,
+		Bounds:   [4]int{0, 0, 50, 20},
+		Children: []model.Element{{ID: 2}},
+	}
+	pre := snapshotElement(&el)
+	// Post tree is identical
+	postTree := []model.Element{el}
+	if stateChanged(pre, postTree) {
+		t.Error("expected no change, got change")
+	}
+}
+
+func TestStateChanged_ElementDisappeared(t *testing.T) {
+	el := model.Element{ID: 1, Title: "Dialog"}
+	pre := snapshotElement(&el)
+	// Post tree has a different element
+	postTree := []model.Element{{ID: 99, Title: "Other"}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (element disappeared), got no change")
+	}
+}
+
+func TestStateChanged_ValueChanged(t *testing.T) {
+	el := model.Element{ID: 1, Value: "old"}
+	pre := snapshotElement(&el)
+	postTree := []model.Element{{ID: 1, Value: "new"}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (value changed), got no change")
+	}
+}
+
+func TestStateChanged_TitleChanged(t *testing.T) {
+	el := model.Element{ID: 1, Title: "Submit"}
+	pre := snapshotElement(&el)
+	postTree := []model.Element{{ID: 1, Title: "Submitted"}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (title changed), got no change")
+	}
+}
+
+func TestStateChanged_FocusChanged(t *testing.T) {
+	el := model.Element{ID: 1, Focused: false}
+	pre := snapshotElement(&el)
+	postTree := []model.Element{{ID: 1, Focused: true}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (focus changed), got no change")
+	}
+}
+
+func TestStateChanged_SelectedChanged(t *testing.T) {
+	el := model.Element{ID: 1, Selected: false}
+	pre := snapshotElement(&el)
+	postTree := []model.Element{{ID: 1, Selected: true}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (selected changed), got no change")
+	}
+}
+
+func TestStateChanged_BoundsChanged(t *testing.T) {
+	el := model.Element{ID: 1, Bounds: [4]int{0, 0, 50, 20}}
+	pre := snapshotElement(&el)
+	postTree := []model.Element{{ID: 1, Bounds: [4]int{10, 10, 50, 20}}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (bounds changed), got no change")
+	}
+}
+
+func TestStateChanged_ChildCountChanged(t *testing.T) {
+	el := model.Element{ID: 1, Children: []model.Element{{ID: 2}}}
+	pre := snapshotElement(&el)
+	// Post tree: element now has 2 children
+	postTree := []model.Element{{ID: 1, Children: []model.Element{{ID: 2}, {ID: 3}}}}
+	if !stateChanged(pre, postTree) {
+		t.Error("expected change (child count changed), got no change")
+	}
+}
+
+func TestFindFocusedElementRaw(t *testing.T) {
+	tree := []model.Element{
+		{ID: 1, Role: "window", Children: []model.Element{
+			{ID: 2, Role: "btn", Title: "OK"},
+			{ID: 3, Role: "input", Title: "Name", Focused: true},
+		}},
+	}
+	focused := findFocusedElementRaw(tree)
+	if focused == nil {
+		t.Fatal("expected to find focused element")
+	}
+	if focused.ID != 3 {
+		t.Errorf("expected focused element ID=3, got %d", focused.ID)
+	}
+
+	// No focused element
+	tree2 := []model.Element{{ID: 1, Role: "btn"}}
+	if findFocusedElementRaw(tree2) != nil {
+		t.Error("expected nil when no element is focused")
+	}
+}
+
+func TestFindDeepestFocused_MultipleFocusedElements(t *testing.T) {
+	// Simulates Reminders where a parent cell and the actual input both have Focused=true.
+	// The deepest input should be returned.
+	tree := []model.Element{
+		{ID: 1, Role: "window", Children: []model.Element{
+			{ID: 9, Role: "cell", Description: "My Lists", Focused: true, Children: []model.Element{
+				{ID: 14, Role: "cell", Description: "Reminders", Focused: true},
+			}},
+			{ID: 20, Role: "group", Children: []model.Element{
+				{ID: 50, Role: "input", Value: "Test List", Focused: true},
+			}},
+		}},
+	}
+	focused := findDeepestFocused(tree)
+	if focused == nil {
+		t.Fatal("expected to find focused element")
+	}
+	// Should prefer the input (id=50) over the cells (id=9, id=14)
+	if focused.ID != 50 {
+		t.Errorf("expected deepest focused to be input id=50, got id=%d role=%s", focused.ID, focused.Role)
+	}
+}
+
+func TestFindDeepestFocused_PrefersInputRole(t *testing.T) {
+	// Two sibling focused elements at the same depth: one input, one cell.
+	// The input should be preferred.
+	tree := []model.Element{
+		{ID: 1, Role: "window", Children: []model.Element{
+			{ID: 2, Role: "cell", Title: "Some cell", Focused: true},
+			{ID: 3, Role: "input", Title: "Name field", Focused: true},
+		}},
+	}
+	focused := findDeepestFocused(tree)
+	if focused == nil {
+		t.Fatal("expected to find focused element")
+	}
+	if focused.ID != 3 {
+		t.Errorf("expected input id=3 to be preferred, got id=%d role=%s", focused.ID, focused.Role)
+	}
+}
+
+func TestFindDeepestFocused_SingleFocused(t *testing.T) {
+	// Single focused element should be returned as before.
+	tree := []model.Element{
+		{ID: 1, Role: "window", Children: []model.Element{
+			{ID: 2, Role: "btn", Title: "OK"},
+			{ID: 3, Role: "input", Title: "Name", Focused: true},
+		}},
+	}
+	focused := findDeepestFocused(tree)
+	if focused == nil {
+		t.Fatal("expected to find focused element")
+	}
+	if focused.ID != 3 {
+		t.Errorf("expected focused id=3, got id=%d", focused.ID)
+	}
+}
+
+func TestFindFocusedElement_DeepestReturned(t *testing.T) {
+	// Verify the public findFocusedElement also returns the deepest element
+	tree := []model.Element{
+		{ID: 1, Role: "window", Focused: true, Children: []model.Element{
+			{ID: 2, Role: "group", Focused: true, Children: []model.Element{
+				{ID: 3, Role: "input", Title: "Search", Focused: true},
+			}},
+		}},
+	}
+	focused := findFocusedElement(tree)
+	if focused == nil {
+		t.Fatal("expected to find focused element")
+	}
+	if focused.ID != 3 {
+		t.Errorf("expected deepest focused id=3, got id=%d", focused.ID)
+	}
+}
+
+// buildNotesMultiPaneTree creates a simplified accessibility tree mimicking
+// Apple Notes with a sidebar (note preview list) and main content area, where
+// the same text "Buy groceries" appears in both the sidebar preview and the
+// active note's checklist.
+//
+//	root (id=1, window)
+//	├── sidebar (id=2, group, bounds=[0,0,300,800])
+//	│   ├── notePreview1 (id=3, txt, title="My Task List\n9:45pm\nBuy groceries", bounds=[20,100,260,60])
+//	│   └── notePreview2 (id=4, txt, title="Other Note", bounds=[20,170,260,40])
+//	└── content (id=5, group, bounds=[300,0,700,800])
+//	    ├── noteTitle (id=6, txt, title="My Task List", bounds=[320,50,660,30])
+//	    ├── checkRow1 (id=7, group, bounds=[320,100,660,20])
+//	    │   ├── checkbox1 (id=8, chk, bounds=[320,100,20,20])
+//	    │   └── label1 (id=9, txt, title="Buy groceries", bounds=[345,100,300,20])
+//	    └── checkRow2 (id=10, group, bounds=[320,130,660,20])
+//	        ├── checkbox2 (id=11, chk, bounds=[320,130,20,20])
+//	        └── label2 (id=12, txt, title="Walk the dog", bounds=[345,130,300,20])
+func buildNotesMultiPaneTree() []model.Element {
+	return []model.Element{
+		{
+			ID: 1, Role: "window", Title: "Notes", Bounds: [4]int{0, 0, 1000, 800},
+			Children: []model.Element{
+				{
+					ID: 2, Role: "group", Title: "Sidebar", Bounds: [4]int{0, 0, 300, 800},
+					Children: []model.Element{
+						{ID: 3, Role: "txt", Title: "My Task List\n9:45pm\nBuy groceries", Bounds: [4]int{20, 100, 260, 60}},
+						{ID: 4, Role: "txt", Title: "Other Note", Bounds: [4]int{20, 170, 260, 40}},
+					},
+				},
+				{
+					ID: 5, Role: "group", Title: "Content", Bounds: [4]int{300, 0, 700, 800},
+					Children: []model.Element{
+						{ID: 6, Role: "txt", Title: "My Task List", Bounds: [4]int{320, 50, 660, 30}},
+						{
+							ID: 7, Role: "group", Bounds: [4]int{320, 100, 660, 20},
+							Children: []model.Element{
+								{ID: 8, Role: "chk", Bounds: [4]int{320, 100, 20, 20}},
+								{ID: 9, Role: "txt", Title: "Buy groceries", Bounds: [4]int{345, 100, 300, 20}},
+							},
+						},
+						{
+							ID: 10, Role: "group", Bounds: [4]int{320, 130, 660, 20},
+							Children: []model.Element{
+								{ID: 11, Role: "chk", Bounds: [4]int{320, 130, 20, 20}},
+								{ID: 12, Role: "txt", Title: "Walk the dog", Bounds: [4]int{345, 130, 300, 20}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestPickBestNearMatch_PrefersContentArea(t *testing.T) {
+	tree := buildNotesMultiPaneTree()
+
+	// "Buy groceries" matches:
+	// - id=3 (sidebar preview, x=20) — the wrong one
+	// - id=9 (content area checklist, x=345) — the correct one
+	matches := filterVisibleElements(collectLeafMatches(tree, "buy groceries", nil, false))
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(matches))
+	}
+
+	best := pickBestNearMatch(tree, matches)
+	if best.ID != 9 {
+		t.Fatalf("expected content-area match id=9, got id=%d (x=%d)", best.ID, best.Bounds[0])
+	}
+}
+
+func TestPickBestNearMatch_ContentAreaCheckbox(t *testing.T) {
+	tree := buildNotesMultiPaneTree()
+
+	// Full flow: text match + --near should find the checkbox in the content area
+	matches := filterVisibleElements(collectLeafMatches(tree, "buy groceries", nil, false))
+	best := pickBestNearMatch(tree, matches)
+
+	// best should be id=9 (content area "Buy groceries" label at x=345)
+	if best.ID != 9 {
+		t.Fatalf("expected content-area match id=9, got id=%d", best.ID)
+	}
+
+	// Then findNearestInteractiveElement from that match should find checkbox1 (id=8)
+	nearest := findNearestInteractiveElement(tree, best, "")
+	if nearest == nil {
+		t.Fatal("expected to find nearest interactive element")
+	}
+	if nearest.ID != 8 {
+		t.Fatalf("expected checkbox id=8 near content-area text, got id=%d", nearest.ID)
+	}
+}
+
+func TestPickBestNearMatch_SingleMatch(t *testing.T) {
+	tree := buildNotesMultiPaneTree()
+
+	// "Walk the dog" only appears once — should return it directly
+	matches := filterVisibleElements(collectLeafMatches(tree, "walk the dog", nil, false))
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(matches))
+	}
+
+	best := pickBestNearMatch(tree, matches)
+	if best.ID != 12 {
+		t.Fatalf("expected id=12, got id=%d", best.ID)
+	}
+}
+
+func TestPickBestNearMatch_SameXUsesFocusProximity(t *testing.T) {
+	// Two matches at the same X position — should fall back to focus proximity
+	tree := []model.Element{
+		{
+			ID: 1, Role: "window",
+			Children: []model.Element{
+				{
+					ID: 2, Role: "group",
+					Children: []model.Element{
+						{ID: 3, Role: "txt", Title: "Buy groceries", Bounds: [4]int{300, 100, 200, 20}},
+					},
+				},
+				{
+					ID: 4, Role: "group",
+					Children: []model.Element{
+						{ID: 5, Role: "input", Focused: true, Bounds: [4]int{300, 200, 200, 20}},
+						{ID: 6, Role: "txt", Title: "Buy groceries", Bounds: [4]int{300, 230, 200, 20}},
+					},
+				},
+			},
+		},
+	}
+	matches := filterVisibleElements(collectLeafMatches(tree, "buy groceries", nil, false))
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(matches))
+	}
+
+	best := pickBestNearMatch(tree, matches)
+	// id=6 is in the same group as the focused element, so should be preferred
+	if best.ID != 6 {
+		t.Fatalf("expected id=6 (near focused element), got id=%d", best.ID)
+	}
+}
+
+func TestBoolPtr(t *testing.T) {
+	p := boolPtr(true)
+	if p == nil || !*p {
+		t.Error("expected *true")
+	}
+	p = boolPtr(false)
+	if p == nil || *p {
+		t.Error("expected *false")
 	}
 }

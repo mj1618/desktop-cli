@@ -35,6 +35,10 @@ var PrettyOutput bool
 // RawMode disables all smart defaults when true (set by --raw flag).
 var RawMode bool
 
+// MaxAgentElements limits how many elements agent format will output.
+// 0 means unlimited. Set via --max-elements or auto-applied for web content.
+var MaxAgentElements int
+
 // IsOutputPiped returns true when stdout is a pipe (not a terminal).
 // When an agent calls the CLI, stdout is typically piped.
 func IsOutputPiped() bool {
@@ -65,6 +69,17 @@ type ReadFlatResult struct {
 	Elements      []model.FlatElement `yaml:"elements"                 json:"elements"`
 }
 
+// ReadDiffResult is the output when --since is used, returning only changes.
+type ReadDiffResult struct {
+	App           string         `yaml:"app,omitempty"            json:"app,omitempty"`
+	PID           int            `yaml:"pid,omitempty"            json:"pid,omitempty"`
+	Window        string         `yaml:"window,omitempty"         json:"window,omitempty"`
+	SmartDefaults string         `yaml:"smart_defaults,omitempty" json:"smart_defaults,omitempty"`
+	TS            int64          `yaml:"ts"                       json:"ts"`
+	Since         int64          `yaml:"since"                    json:"since"`
+	Diff          model.TreeDiff `yaml:"diff"                     json:"diff"`
+}
+
 // ScreenshotReadResult is the output of `read --format screenshot`, combining
 // an annotated screenshot (with [id] labels) and a structured element list.
 type ScreenshotReadResult struct {
@@ -89,6 +104,10 @@ func Print(v interface{}) error {
 		return PrintYAML(v)
 	case FormatAgent:
 		return PrintAgent(v)
+	case FormatScreenshot:
+		// Screenshot format is handled directly in cmd/read.go's runReadScreenshot;
+		// if we reach here from a non-read command, fall back to YAML.
+		return PrintYAML(v)
 	default:
 		return fmt.Errorf("unsupported output format: %s", OutputFormat)
 	}
@@ -134,12 +153,15 @@ func PrintAgent(v interface{}) error {
 		return printAgentTree(result.App, result.PID, result.Window, result.Elements)
 	case ReadFlatResult:
 		return printAgentFlat(result.App, result.PID, result.Window, result.Elements)
+	case ReadDiffResult:
+		return printAgentDiff(result)
 	default:
 		return PrintYAML(v)
 	}
 }
 
 func printAgentTree(app string, pid int, window string, elements []model.Element) error {
+	model.GenerateRefs(elements)
 	flat := model.FlattenElements(elements)
 	return printAgentFlat(app, pid, window, flat)
 }
@@ -154,11 +176,25 @@ func printAgentFlat(app string, pid int, window string, elements []model.FlatEle
 // This is the same format as --format agent, but returned as a string for
 // embedding in other responses (e.g. the --post-read state field).
 func FormatAgentString(app string, pid int, window string, elements []model.Element) string {
+	model.GenerateRefs(elements)
 	flat := model.FlattenElements(elements)
 	return formatAgentString(app, pid, window, flat)
 }
 
+// FormatAgentStringWithMax is like FormatAgentString but accepts an explicit
+// max-elements cap (0 = unlimited). Used by --post-read to apply sensible
+// defaults without relying on the global MaxAgentElements variable.
+func FormatAgentStringWithMax(app string, pid int, window string, elements []model.Element, maxElements int) string {
+	model.GenerateRefs(elements)
+	flat := model.FlattenElements(elements)
+	return formatAgentStringWithMax(app, pid, window, flat, maxElements)
+}
+
 func formatAgentString(app string, pid int, window string, elements []model.FlatElement) string {
+	return formatAgentStringWithMax(app, pid, window, elements, MaxAgentElements)
+}
+
+func formatAgentStringWithMax(app string, pid int, window string, elements []model.FlatElement, maxEl int) string {
 	var buf bytes.Buffer
 
 	// Header
@@ -170,6 +206,8 @@ func formatAgentString(app string, pid int, window string, elements []model.Flat
 	// Filter to interactive elements and display text, then format.
 	// Skip elements with zero-width or zero-height bounds — these are
 	// off-screen or virtualized and not actually visible to the user.
+	count := 0
+	totalVisible := 0
 	for _, el := range elements {
 		if el.Bounds[2] <= 0 || el.Bounds[3] <= 0 {
 			continue
@@ -179,7 +217,16 @@ func formatAgentString(app string, pid int, window string, elements []model.Flat
 		if !isInteractive && !isDisplayText {
 			continue
 		}
+		totalVisible++
+		if maxEl > 0 && count >= maxEl {
+			continue // keep counting totalVisible for the truncation message
+		}
 		fmt.Fprintln(&buf, formatAgentLine(el))
+		count++
+	}
+
+	if maxEl > 0 && totalVisible > maxEl {
+		fmt.Fprintf(&buf, "\n# ... truncated: showing %d of %d elements. Use --max-elements 0 for all, or --roles/--depth/--text to filter.\n", maxEl, totalVisible)
 	}
 
 	return buf.String()
@@ -227,8 +274,15 @@ func formatAgentLine(el model.FlatElement) string {
 	}
 	label = truncate(label, 80)
 
-	line := fmt.Sprintf("[%d] %s %q (%d,%d,%d,%d)",
-		el.ID, el.Role, label,
+	var idPart string
+	if el.Ref != "" {
+		idPart = fmt.Sprintf("[%d|%s]", el.ID, el.Ref)
+	} else {
+		idPart = fmt.Sprintf("[%d]", el.ID)
+	}
+
+	line := fmt.Sprintf("%s %s %q (%d,%d,%d,%d)",
+		idPart, el.Role, label,
 		el.Bounds[0], el.Bounds[1], el.Bounds[2], el.Bounds[3])
 
 	// Annotations
@@ -268,6 +322,60 @@ func hasAction(actions []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func printAgentDiff(result ReadDiffResult) error {
+	var buf bytes.Buffer
+
+	// Header with diff annotation
+	header := agentHeader(result.App, result.PID, result.Window, nil)
+	if header != "" {
+		fmt.Fprintf(&buf, "# %s [diff since %d]\n\n", header, result.Since)
+	} else {
+		fmt.Fprintf(&buf, "# diff since %d\n\n", result.Since)
+	}
+
+	// Added elements
+	for _, el := range result.Diff.Added {
+		fmt.Fprintf(&buf, "+ %s\n", formatAgentLine(el))
+	}
+
+	// Removed elements
+	for _, el := range result.Diff.Removed {
+		label := el.Title
+		if label == "" {
+			label = el.Description
+		}
+		if label == "" {
+			label = el.Value
+		}
+		if label != "" {
+			fmt.Fprintf(&buf, "- [%d] %s %q\n", el.ID, el.Role, truncate(label, 80))
+		} else {
+			fmt.Fprintf(&buf, "- [%d] %s\n", el.ID, el.Role)
+		}
+	}
+
+	// Changed elements
+	for _, ch := range result.Diff.Changed {
+		label := ch.Title
+		if label == "" {
+			label = ch.Role
+		}
+		var parts []string
+		for field, vals := range ch.Changes {
+			parts = append(parts, fmt.Sprintf("%s=%q (was %q)", field, vals[1], vals[0]))
+		}
+		fmt.Fprintf(&buf, "~ [%d] %s %s\n", ch.ID, label, strings.Join(parts, ", "))
+	}
+
+	// Unchanged count
+	if result.Diff.UnchangedCount > 0 {
+		fmt.Fprintf(&buf, "# %d elements unchanged\n", result.Diff.UnchangedCount)
+	}
+
+	_, err := os.Stdout.WriteString(buf.String())
+	return err
 }
 
 func truncate(s string, max int) string {

@@ -36,6 +36,7 @@ func init() {
 	scrollCmd.Flags().String("app", "", "Scope to application")
 	scrollCmd.Flags().String("window", "", "Scope to window")
 	addTextTargetingFlags(scrollCmd, "text", "Find element by text and scroll within it (case-insensitive match on title/value/description)")
+	addRefFlag(scrollCmd)
 }
 
 func runScroll(cmd *cobra.Command, args []string) error {
@@ -76,9 +77,21 @@ func runScroll(cmd *cobra.Command, args []string) error {
 
 	text, roles, exact, scopeID := getTextTargetingFlags(cmd, "text")
 	hasText := text != ""
+	ref, _ := cmd.Flags().GetString("ref")
+	hasRef := ref != ""
 
-	// If --text specified, resolve element by text content
-	if hasText {
+	// If --ref specified, resolve element by stable ref
+	if hasRef {
+		if appName == "" && window == "" {
+			return fmt.Errorf("--ref requires --app or --window to scope the element lookup")
+		}
+		elem, _, err := resolveElementByRef(provider, appName, window, 0, 0, ref)
+		if err != nil {
+			return err
+		}
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if hasText {
 		if appName == "" && window == "" {
 			return fmt.Errorf("--text requires --app or --window to scope the element lookup")
 		}

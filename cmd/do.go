@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/mj1618/desktop-cli/internal/model"
 	"github.com/mj1618/desktop-cli/internal/output"
 	"github.com/mj1618/desktop-cli/internal/platform"
 	"github.com/spf13/cobra"
@@ -26,17 +28,24 @@ type DoResult struct {
 
 // StepResult is the output for a single step within a batch.
 type StepResult struct {
-	Step    int          `yaml:"step"               json:"step"`
-	OK      bool         `yaml:"ok"                 json:"ok"`
-	Action  string       `yaml:"action"             json:"action"`
-	Error   string       `yaml:"error,omitempty"    json:"error,omitempty"`
-	Target  *ElementInfo `yaml:"target,omitempty"   json:"target,omitempty"`
-	Focused *ElementInfo `yaml:"focused,omitempty"  json:"focused,omitempty"`
-	Text    string       `yaml:"text,omitempty"     json:"text,omitempty"`
-	Key     string       `yaml:"key,omitempty"      json:"key,omitempty"`
-	Elapsed string       `yaml:"elapsed,omitempty"  json:"elapsed,omitempty"`
-	Match   string       `yaml:"match,omitempty"    json:"match,omitempty"`
-	State   string       `yaml:"state,omitempty"    json:"state,omitempty"`
+	Step        int          `yaml:"step"                   json:"step"`
+	OK          bool         `yaml:"ok"                     json:"ok"`
+	Action      string       `yaml:"action"                 json:"action"`
+	Error       string       `yaml:"error,omitempty"        json:"error,omitempty"`
+	Target      *ElementInfo `yaml:"target,omitempty"       json:"target,omitempty"`
+	Focused     *ElementInfo `yaml:"focused,omitempty"      json:"focused,omitempty"`
+	Text        string       `yaml:"text,omitempty"         json:"text,omitempty"`
+	Key         string       `yaml:"key,omitempty"          json:"key,omitempty"`
+	Elapsed     string       `yaml:"elapsed,omitempty"      json:"elapsed,omitempty"`
+	Match       string       `yaml:"match,omitempty"        json:"match,omitempty"`
+	State       string       `yaml:"state,omitempty"        json:"state,omitempty"`
+	Matched     *bool        `yaml:"matched,omitempty"      json:"matched,omitempty"`
+	Branch      string       `yaml:"branch,omitempty"       json:"branch,omitempty"`
+	Substeps    []StepResult `yaml:"substeps,omitempty"     json:"substeps,omitempty"`
+	Verified    *bool        `yaml:"verified,omitempty"     json:"verified,omitempty"`
+	Retried     *bool        `yaml:"retried,omitempty"      json:"retried,omitempty"`
+	RetryMethod string       `yaml:"retry_method,omitempty" json:"retry_method,omitempty"`
+	RetryReason string       `yaml:"retry_reason,omitempty" json:"retry_reason,omitempty"`
 }
 
 var doCmd = &cobra.Command{
@@ -47,14 +56,26 @@ var doCmd = &cobra.Command{
 Each step is a command name with its flags as a map. Steps execute sequentially,
 and by default execution stops on the first error.
 
-Supported step types: click, type, action, set-value, scroll, wait, focus, read, sleep
+Supported step types: click, hover, type, action, set-value, fill, scroll, wait, assert, focus, read, open, sleep, if-exists, if-focused, try
+
+Conditional step types:
+  if-exists: { text: "Accept" }     # check if element exists
+    then: [steps]                    # run if found
+    else: [steps]                    # run if not found (optional)
+  if-focused: { roles: "input" }    # check if focused element matches
+    then: [steps]
+    else: [steps]
+  try: [steps]                       # run steps, continue even if they fail
 
 Example:
   desktop-cli do --app "Safari" <<'EOF'
-  - click: { text: "Full Name" }
-  - type: { text: "John Doe" }
-  - type: { key: "tab" }
-  - type: { text: "john@example.com" }
+  - try:
+    - click: { text: "Accept Cookies" }
+  - if-exists: { text: "Sign In", roles: "btn" }
+    then:
+    - click: { text: "Sign In" }
+    else:
+    - read: { format: "agent" }
   - click: { text: "Submit" }
   - wait: { for-text: "Thank you", timeout: 10 }
   EOF`,
@@ -87,7 +108,7 @@ func runDo(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no steps provided on stdin — pipe a YAML list of actions")
 	}
 
-	var rawSteps []map[string]map[string]interface{}
+	var rawSteps []map[string]interface{}
 	if err := yaml.Unmarshal(data, &rawSteps); err != nil {
 		return fmt.Errorf("failed to parse YAML steps: %w", err)
 	}
@@ -96,60 +117,37 @@ func runDo(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no steps provided — expected a YAML list of actions")
 	}
 
-	results := make([]StepResult, 0, len(rawSteps))
-	completed := 0
-	hasFailure := false
-	var lastErr string
-	var lastApp string // track last app used for display elements
-
-	for i, step := range rawSteps {
-		stepNum := i + 1
-
-		if len(step) != 1 {
-			errMsg := fmt.Sprintf("step %d: expected exactly one action key, got %d", stepNum, len(step))
-			hasFailure = true
-			if stopOnError {
-				results = append(results, StepResult{Step: stepNum, OK: false, Error: errMsg})
-				lastErr = errMsg
-				break
-			}
-			results = append(results, StepResult{Step: stepNum, OK: false, Error: errMsg})
-			continue
-		}
-
-		for action, params := range step {
-			app := stringParam(params, "app", defaultApp)
-			window := stringParam(params, "window", defaultWindow)
-			lastApp = app
-
-			result, err := executeStep(provider, action, params, app, window)
-			result.Step = stepNum
-			if err != nil {
-				result.OK = false
-				result.Error = err.Error()
-				results = append(results, result)
-				hasFailure = true
-				if stopOnError {
-					lastErr = fmt.Sprintf("step %d: %s", stepNum, err.Error())
-					goto done
-				}
-			} else {
-				result.OK = true
-				completed++
-				results = append(results, result)
-			}
-		}
+	ctx := &DoContext{
+		Provider:      provider,
+		DefaultApp:    defaultApp,
+		DefaultWindow: defaultWindow,
+		StopOnError:   stopOnError,
 	}
 
-done:
-	if !hasFailure {
+	ctx.ExecuteSteps(rawSteps, 0)
+
+	results := ctx.Results
+	hasFailure := ctx.HasFailure
+	completed := 0
+	var lastErr string
+	if hasFailure {
+		for _, r := range results {
+			if r.OK {
+				completed++
+			}
+		}
+		if len(results) > 0 && !results[len(results)-1].OK && results[len(results)-1].Error != "" {
+			lastErr = fmt.Sprintf("step %d: %s", results[len(results)-1].Step, results[len(results)-1].Error)
+		}
+	} else {
 		completed = len(results)
 	}
+	lastApp := ctx.LastApp
 
 	// Collect display elements once at the end using the last app context
 	var display []ElementInfo
 	if lastApp != "" {
-		display = readDisplayElements(provider, lastApp, defaultWindow, 0, 0)
+		display = readDisplayElements(provider, lastApp, defaultWindow, 0, 0, [4]int{})
 	}
 
 	allOK := !hasFailure
@@ -164,47 +162,455 @@ done:
 	})
 }
 
-func executeStep(provider *platform.Provider, action string, params map[string]interface{}, app, window string) (StepResult, error) {
-	switch action {
-	case "click":
-		return executeClick(provider, params, app, window)
-	case "type":
-		return executeType(provider, params, app, window)
-	case "action":
-		return executeAction(provider, params, app, window)
-	case "set-value":
-		return executeSetValue(provider, params, app, window)
-	case "scroll":
-		return executeScroll(provider, params, app, window)
-	case "wait":
-		return executeWait(provider, params, app, window)
-	case "focus":
-		return executeFocus(provider, params, app, window)
-	case "read":
-		return executeRead(provider, params, app, window)
-	case "sleep":
-		return executeSleep(params)
-	default:
-		return StepResult{Action: action}, fmt.Errorf("unknown step type %q — supported: click, type, action, set-value, scroll, wait, focus, read, sleep", action)
+// DoContext tracks state during batch step execution.
+// Exported for use by the MCP server.
+type DoContext struct {
+	Provider      *platform.Provider
+	DefaultApp    string
+	DefaultWindow string
+	StopOnError   bool
+	Results       []StepResult
+	HasFailure    bool
+	Stopped       bool
+	LastApp       string
+}
+
+// executeSteps runs a list of raw YAML steps, appending results to ctx.Results.
+// stepOffset is added to step numbers for substep numbering.
+func (ctx *DoContext) ExecuteSteps(rawSteps []map[string]interface{}, stepOffset int) {
+	for i, step := range rawSteps {
+		if ctx.Stopped {
+			break
+		}
+		stepNum := stepOffset + i + 1
+
+		// Check for conditional step types
+		if _, ok := step["if-exists"]; ok {
+			ctx.executeIfExists(step, stepNum)
+			continue
+		}
+		if _, ok := step["if-focused"]; ok {
+			ctx.executeIfFocused(step, stepNum)
+			continue
+		}
+		if _, ok := step["try"]; ok {
+			ctx.executeTry(step, stepNum)
+			continue
+		}
+
+		// Regular step: find the single action key
+		action, params, err := parseRegularStep(step)
+		if err != nil {
+			ctx.HasFailure = true
+			if ctx.StopOnError {
+				ctx.Results = append(ctx.Results, StepResult{Step: stepNum, OK: false, Error: err.Error()})
+				ctx.Stopped = true
+				break
+			}
+			ctx.Results = append(ctx.Results, StepResult{Step: stepNum, OK: false, Error: err.Error()})
+			continue
+		}
+
+		app := StringParam(params, "app", ctx.DefaultApp)
+		window := StringParam(params, "window", ctx.DefaultWindow)
+		ctx.LastApp = app
+
+		result, execErr := ExecuteStep(ctx.Provider, action, params, app, window)
+		result.Step = stepNum
+		if execErr != nil {
+			result.OK = false
+			result.Error = execErr.Error()
+			ctx.Results = append(ctx.Results, result)
+			ctx.HasFailure = true
+			if ctx.StopOnError {
+				ctx.Stopped = true
+				break
+			}
+		} else {
+			result.OK = true
+			ctx.Results = append(ctx.Results, result)
+		}
 	}
 }
 
-func executeClick(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+// parseRegularStep extracts the action name and params from a regular (non-conditional) step.
+func parseRegularStep(step map[string]interface{}) (string, map[string]interface{}, error) {
+	// Find the action key (skip "then", "else" which belong to conditionals)
+	var action string
+	var paramsRaw interface{}
+	for k, v := range step {
+		if k == "then" || k == "else" {
+			continue
+		}
+		if action != "" {
+			return "", nil, fmt.Errorf("expected exactly one action key, got multiple")
+		}
+		action = k
+		paramsRaw = v
+	}
+	if action == "" {
+		return "", nil, fmt.Errorf("no action key found in step")
+	}
+
+	params, ok := paramsRaw.(map[string]interface{})
+	if !ok {
+		// Handle nil params (e.g. `- sleep:` with no value)
+		params = make(map[string]interface{})
+	}
+	return action, params, nil
+}
+
+// parseSubsteps converts a YAML value (expected to be []interface{}) into []map[string]interface{}.
+func parseSubsteps(raw interface{}) ([]map[string]interface{}, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("expected array of steps, got %T", raw)
+	}
+	steps := make([]map[string]interface{}, 0, len(arr))
+	for _, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("expected step map, got %T", item)
+		}
+		steps = append(steps, m)
+	}
+	return steps, nil
+}
+
+// executeIfExists handles the if-exists conditional step.
+func (ctx *DoContext) executeIfExists(step map[string]interface{}, stepNum int) {
+	condRaw := step["if-exists"]
+	condParams, ok := condRaw.(map[string]interface{})
+	if !ok {
+		ctx.HasFailure = true
+		r := StepResult{Step: stepNum, OK: false, Action: "if-exists", Error: "if-exists condition must be a map with text/roles/id params"}
+		ctx.Results = append(ctx.Results, r)
+		if ctx.StopOnError {
+			ctx.Stopped = true
+		}
+		return
+	}
+
+	// Check if the element exists
+	text := StringParam(condParams, "text", "")
+	id := IntParam(condParams, "id", 0)
+	roles := StringParam(condParams, "roles", "")
+	exact := BoolParam(condParams, "exact", false)
+	scopeID := IntParam(condParams, "scope-id", 0)
+	app := StringParam(condParams, "app", ctx.DefaultApp)
+	window := StringParam(condParams, "window", ctx.DefaultWindow)
+	ctx.LastApp = app
+
+	matched := false
+	if text != "" && ctx.Provider != nil {
+		elem, _, err := resolveElementByText(ctx.Provider, app, window, 0, 0, text, roles, exact, scopeID)
+		matched = err == nil && elem != nil
+	} else if id > 0 {
+		if ctx.Provider.Reader != nil {
+			elements, err := ctx.Provider.Reader.ReadElements(platform.ReadOptions{App: app, Window: window})
+			if err == nil {
+				matched = findElementByID(elements, id) != nil
+			}
+		}
+	}
+
+	matchedVal := matched
+	result := StepResult{
+		Step:    stepNum,
+		OK:      true,
+		Action:  "if-exists",
+		Matched: &matchedVal,
+	}
+
+	// Determine which branch to execute
+	var substeps []map[string]interface{}
+	if matched {
+		result.Branch = "then"
+		if thenRaw, ok := step["then"]; ok {
+			var err error
+			substeps, err = parseSubsteps(thenRaw)
+			if err != nil {
+				result.OK = false
+				result.Error = fmt.Sprintf("invalid then steps: %s", err)
+				ctx.HasFailure = true
+				ctx.Results = append(ctx.Results, result)
+				if ctx.StopOnError {
+					ctx.Stopped = true
+				}
+				return
+			}
+		}
+	} else {
+		result.Branch = "else"
+		if elseRaw, ok := step["else"]; ok {
+			var err error
+			substeps, err = parseSubsteps(elseRaw)
+			if err != nil {
+				result.OK = false
+				result.Error = fmt.Sprintf("invalid else steps: %s", err)
+				ctx.HasFailure = true
+				ctx.Results = append(ctx.Results, result)
+				if ctx.StopOnError {
+					ctx.Stopped = true
+				}
+				return
+			}
+		}
+	}
+
+	// Execute the selected branch, collecting substep results
+	if len(substeps) > 0 {
+		subCtx := &DoContext{
+			Provider:      ctx.Provider,
+			DefaultApp:    ctx.DefaultApp,
+			DefaultWindow: ctx.DefaultWindow,
+			StopOnError:   ctx.StopOnError,
+			LastApp:       ctx.LastApp,
+		}
+		subCtx.ExecuteSteps(substeps, 0)
+		result.Substeps = subCtx.Results
+		ctx.LastApp = subCtx.LastApp
+		if subCtx.HasFailure {
+			ctx.HasFailure = true
+			result.OK = false
+			if ctx.StopOnError {
+				ctx.Stopped = true
+			}
+		}
+	}
+
+	ctx.Results = append(ctx.Results, result)
+}
+
+// executeIfFocused handles the if-focused conditional step.
+func (ctx *DoContext) executeIfFocused(step map[string]interface{}, stepNum int) {
+	condRaw := step["if-focused"]
+	condParams, ok := condRaw.(map[string]interface{})
+	if !ok {
+		ctx.HasFailure = true
+		r := StepResult{Step: stepNum, OK: false, Action: "if-focused", Error: "if-focused condition must be a map with roles/text params"}
+		ctx.Results = append(ctx.Results, r)
+		if ctx.StopOnError {
+			ctx.Stopped = true
+		}
+		return
+	}
+
+	roles := StringParam(condParams, "roles", "")
+	text := StringParam(condParams, "text", "")
+	app := StringParam(condParams, "app", ctx.DefaultApp)
+	window := StringParam(condParams, "window", ctx.DefaultWindow)
+	ctx.LastApp = app
+
+	// Read the focused element
+	var focusedInfo *ElementInfo
+	if ctx.Provider != nil {
+		focusedInfo = readFocusedElement(ctx.Provider, app, window, 0, 0)
+	}
+
+	matched := false
+	if focusedInfo != nil {
+		matched = true
+		// Check role filter
+		if roles != "" {
+			roleSet := make(map[string]bool)
+			for _, r := range strings.Split(roles, ",") {
+				r = strings.TrimSpace(r)
+				if r != "" {
+					roleSet[r] = true
+				}
+			}
+			if !roleSet[focusedInfo.Role] {
+				matched = false
+			}
+		}
+		// Check text filter
+		if text != "" && matched {
+			textLower := strings.ToLower(text)
+			if !strings.Contains(strings.ToLower(focusedInfo.Title), textLower) &&
+				!strings.Contains(strings.ToLower(focusedInfo.Value), textLower) &&
+				!strings.Contains(strings.ToLower(focusedInfo.Description), textLower) {
+				matched = false
+			}
+		}
+	}
+
+	matchedVal := matched
+	result := StepResult{
+		Step:    stepNum,
+		OK:      true,
+		Action:  "if-focused",
+		Matched: &matchedVal,
+		Focused: focusedInfo,
+	}
+
+	var substeps []map[string]interface{}
+	if matched {
+		result.Branch = "then"
+		if thenRaw, ok := step["then"]; ok {
+			var err error
+			substeps, err = parseSubsteps(thenRaw)
+			if err != nil {
+				result.OK = false
+				result.Error = fmt.Sprintf("invalid then steps: %s", err)
+				ctx.HasFailure = true
+				ctx.Results = append(ctx.Results, result)
+				if ctx.StopOnError {
+					ctx.Stopped = true
+				}
+				return
+			}
+		}
+	} else {
+		result.Branch = "else"
+		if elseRaw, ok := step["else"]; ok {
+			var err error
+			substeps, err = parseSubsteps(elseRaw)
+			if err != nil {
+				result.OK = false
+				result.Error = fmt.Sprintf("invalid else steps: %s", err)
+				ctx.HasFailure = true
+				ctx.Results = append(ctx.Results, result)
+				if ctx.StopOnError {
+					ctx.Stopped = true
+				}
+				return
+			}
+		}
+	}
+
+	if len(substeps) > 0 {
+		subCtx := &DoContext{
+			Provider:      ctx.Provider,
+			DefaultApp:    ctx.DefaultApp,
+			DefaultWindow: ctx.DefaultWindow,
+			StopOnError:   ctx.StopOnError,
+			LastApp:       ctx.LastApp,
+		}
+		subCtx.ExecuteSteps(substeps, 0)
+		result.Substeps = subCtx.Results
+		ctx.LastApp = subCtx.LastApp
+		if subCtx.HasFailure {
+			ctx.HasFailure = true
+			result.OK = false
+			if ctx.StopOnError {
+				ctx.Stopped = true
+			}
+		}
+	}
+
+	ctx.Results = append(ctx.Results, result)
+}
+
+// executeTry handles the try step type — executes substeps and always continues.
+func (ctx *DoContext) executeTry(step map[string]interface{}, stepNum int) {
+	tryRaw := step["try"]
+	substeps, err := parseSubsteps(tryRaw)
+	if err != nil {
+		ctx.HasFailure = true
+		r := StepResult{Step: stepNum, OK: false, Action: "try", Error: fmt.Sprintf("invalid try steps: %s", err)}
+		ctx.Results = append(ctx.Results, r)
+		if ctx.StopOnError {
+			ctx.Stopped = true
+		}
+		return
+	}
+
+	// Execute substeps with stopOnError=true (stop within the try block on first error)
+	// but the try block itself always succeeds
+	subCtx := &DoContext{
+		Provider:      ctx.Provider,
+		DefaultApp:    ctx.DefaultApp,
+		DefaultWindow: ctx.DefaultWindow,
+		StopOnError:   true, // stop within try on first error
+		LastApp:       ctx.LastApp,
+	}
+	subCtx.ExecuteSteps(substeps, 0)
+
+	result := StepResult{
+		Step:     stepNum,
+		OK:       true, // try blocks always succeed
+		Action:   "try",
+		Substeps: subCtx.Results,
+	}
+	ctx.LastApp = subCtx.LastApp
+
+	ctx.Results = append(ctx.Results, result)
+}
+
+// ExecuteStep dispatches a single action step to the appropriate handler.
+// Used by both the `do` batch command and the MCP server.
+func ExecuteStep(provider *platform.Provider, action string, params map[string]interface{}, app, window string) (StepResult, error) {
+	switch action {
+	case "click":
+		return ExecuteClick(provider, params, app, window)
+	case "hover":
+		return ExecuteHover(provider, params, app, window)
+	case "type":
+		return ExecuteType(provider, params, app, window)
+	case "action":
+		return ExecuteAction(provider, params, app, window)
+	case "set-value":
+		return ExecuteSetValue(provider, params, app, window)
+	case "scroll":
+		return ExecuteScroll(provider, params, app, window)
+	case "wait":
+		return ExecuteWait(provider, params, app, window)
+	case "focus":
+		return ExecuteFocus(provider, params, app, window)
+	case "read":
+		return ExecuteRead(provider, params, app, window)
+	case "open":
+		return ExecuteOpen(params)
+	case "assert":
+		return ExecuteAssert(provider, params, app, window)
+	case "fill":
+		return executeFill(provider, params, app, window)
+	case "sleep":
+		return ExecuteSleep(params)
+	default:
+		return StepResult{Action: action}, fmt.Errorf("unknown step type %q — supported: click, hover, type, action, set-value, fill, scroll, wait, focus, read, open, assert, sleep, if-exists, if-focused, try", action)
+	}
+}
+
+// getVerifyOptionsFromParams extracts verify options from a do-step params map.
+func getVerifyOptionsFromParams(params map[string]interface{}) verifyOptions {
+	return verifyOptions{
+		Verify:      BoolParam(params, "verify", false),
+		VerifyDelay: IntParam(params, "verify-delay", 100),
+		MaxRetries:  IntParam(params, "max-retries", 2),
+	}
+}
+
+// applyVerifyResult copies verification fields from a verifyResult to a StepResult.
+func applyVerifyResult(sr *StepResult, vr verifyResult) {
+	sr.Verified = boolPtr(vr.Verified)
+	if vr.Retried {
+		sr.Retried = boolPtr(true)
+		sr.RetryMethod = vr.RetryMethod
+		sr.RetryReason = vr.RetryReason
+	}
+}
+
+func ExecuteClick(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.Inputter == nil {
 		return StepResult{Action: "click"}, fmt.Errorf("input not available on this platform")
 	}
 
-	text := stringParam(params, "text", "")
-	id := intParam(params, "id", 0)
-	x := intParam(params, "x", 0)
-	y := intParam(params, "y", 0)
-	buttonStr := stringParam(params, "button", "left")
-	double := boolParam(params, "double", false)
-	roles := stringParam(params, "roles", "")
-	exact := boolParam(params, "exact", false)
-	scopeID := intParam(params, "scope-id", 0)
-	near := boolParam(params, "near", false)
-	nearDirection := stringParam(params, "near-direction", "")
+	text := StringParam(params, "text", "")
+	id := IntParam(params, "id", 0)
+	x := IntParam(params, "x", 0)
+	y := IntParam(params, "y", 0)
+	buttonStr := StringParam(params, "button", "left")
+	double := BoolParam(params, "double", false)
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
+	near := BoolParam(params, "near", false)
+	nearDirection := StringParam(params, "near-direction", "")
 
 	button, err := platform.ParseMouseButton(buttonStr)
 	if err != nil {
@@ -216,16 +622,33 @@ func executeClick(provider *platform.Provider, params map[string]interface{}, ap
 		count = 2
 	}
 
+	vOpts := getVerifyOptionsFromParams(params)
+	ref := StringParam(params, "ref", "")
 	var target *ElementInfo
+	var resolvedElem *model.Element
+	var preSnapshot elementSnapshot
 
-	if text != "" {
-		elem, allElements, err := resolveElementByText(provider, app, window, 0, 0, text, roles, exact, scopeID)
+	if ref != "" {
+		elem, _, err := resolveElementByRef(provider, app, window, 0, 0, ref)
 		if err != nil {
 			return StepResult{Action: "click"}, err
 		}
+		target = elementInfoFromElement(elem)
+		resolvedElem = elem
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if text != "" {
 		if near {
+			// --near mode: get ALL text matches, pick the best one for proximity search.
+			allMatches, allElements, err := resolveAllTextMatches(provider, app, window, 0, 0, text, roles, exact, scopeID)
+			if err != nil {
+				return StepResult{Action: "click"}, err
+			}
+			elem := pickBestNearMatch(allElements, allMatches)
+			resolvedElem = elem
 			if nearest := findNearestInteractiveElement(allElements, elem, nearDirection); nearest != nil {
 				elem = nearest
+				resolvedElem = elem
 				target = elementInfoFromElement(elem)
 				x = elem.Bounds[0] + elem.Bounds[2]/2
 				y = elem.Bounds[1] + elem.Bounds[3]/2
@@ -233,6 +656,11 @@ func executeClick(provider *platform.Provider, params map[string]interface{}, ap
 				x, y = nearFallbackOffset(elem, nearDirection)
 			}
 		} else {
+			elem, _, err := resolveElementByText(provider, app, window, 0, 0, text, roles, exact, scopeID)
+			if err != nil {
+				return StepResult{Action: "click"}, err
+			}
+			resolvedElem = elem
 			target = elementInfoFromElement(elem)
 			x = elem.Bounds[0] + elem.Bounds[2]/2
 			y = elem.Bounds[1] + elem.Bounds[3]/2
@@ -250,46 +678,151 @@ func executeClick(provider *platform.Provider, params map[string]interface{}, ap
 			return StepResult{Action: "click"}, fmt.Errorf("element with id %d not found", id)
 		}
 		target = elementInfoFromElement(elem)
+		resolvedElem = elem
 		x = elem.Bounds[0] + elem.Bounds[2]/2
 		y = elem.Bounds[1] + elem.Bounds[3]/2
 	} else if x == 0 && y == 0 {
 		return StepResult{Action: "click"}, fmt.Errorf("specify text, id, or x/y coordinates")
 	}
 
+	if vOpts.Verify && resolvedElem != nil {
+		preSnapshot = snapshotElement(resolvedElem)
+	}
+
 	if err := provider.Inputter.Click(x, y, button, count); err != nil {
 		return StepResult{Action: "click"}, err
 	}
 
-	return StepResult{Action: "click", Target: target}, nil
+	result := StepResult{Action: "click", Target: target}
+
+	if vOpts.Verify && preSnapshot.Exists {
+		var fallbacks []fallbackAction
+		if provider.ActionPerformer != nil && resolvedElem != nil {
+			elemID := resolvedElem.ID
+			fallbacks = append(fallbacks, fallbackAction{
+				Method: "action",
+				Execute: func() error {
+					return provider.ActionPerformer.PerformAction(platform.ActionOptions{
+						App: app, Window: window, ID: elemID, Action: "press",
+					})
+				},
+			})
+		}
+		fallbacks = append(fallbacks, fallbackAction{
+			Method: "offset-click",
+			Execute: func() error {
+				return provider.Inputter.Click(x+2, y+2, button, count)
+			},
+		})
+		vr := verifyAction(provider, preSnapshot, vOpts, app, window, 0, 0, fallbacks, 0)
+		applyVerifyResult(&result, vr)
+	}
+
+	return result, nil
 }
 
-func executeType(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteHover(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+	if provider.Inputter == nil {
+		return StepResult{Action: "hover"}, fmt.Errorf("input not available on this platform")
+	}
+
+	text := StringParam(params, "text", "")
+	id := IntParam(params, "id", 0)
+	x := IntParam(params, "x", 0)
+	y := IntParam(params, "y", 0)
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
+
+	ref := StringParam(params, "ref", "")
+	var target *ElementInfo
+
+	if ref != "" {
+		elem, _, err := resolveElementByRef(provider, app, window, 0, 0, ref)
+		if err != nil {
+			return StepResult{Action: "hover"}, err
+		}
+		target = elementInfoFromElement(elem)
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if text != "" {
+		elem, _, err := resolveElementByText(provider, app, window, 0, 0, text, roles, exact, scopeID)
+		if err != nil {
+			return StepResult{Action: "hover"}, err
+		}
+		target = elementInfoFromElement(elem)
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if id > 0 {
+		if provider.Reader == nil {
+			return StepResult{Action: "hover"}, fmt.Errorf("reader not available on this platform")
+		}
+		elements, err := provider.Reader.ReadElements(platform.ReadOptions{App: app, Window: window})
+		if err != nil {
+			return StepResult{Action: "hover"}, err
+		}
+		elem := findElementByID(elements, id)
+		if elem == nil {
+			return StepResult{Action: "hover"}, fmt.Errorf("element with id %d not found", id)
+		}
+		target = elementInfoFromElement(elem)
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if x == 0 && y == 0 {
+		return StepResult{Action: "hover"}, fmt.Errorf("specify text, ref, id, or x/y coordinates")
+	}
+
+	if err := provider.Inputter.MoveMouse(x, y); err != nil {
+		return StepResult{Action: "hover"}, err
+	}
+
+	return StepResult{Action: "hover", Target: target}, nil
+}
+
+func ExecuteType(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.Inputter == nil {
 		return StepResult{Action: "type"}, fmt.Errorf("input not available on this platform")
 	}
 
-	text := stringParam(params, "text", "")
-	key := stringParam(params, "key", "")
-	target := stringParam(params, "target", "")
-	id := intParam(params, "id", 0)
-	roles := stringParam(params, "roles", "")
-	exact := boolParam(params, "exact", false)
-	scopeID := intParam(params, "scope-id", 0)
-	delayMs := intParam(params, "delay", 0)
+	text := StringParam(params, "text", "")
+	key := StringParam(params, "key", "")
+	target := StringParam(params, "target", "")
+	refParam := StringParam(params, "ref", "")
+	id := IntParam(params, "id", 0)
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
+	delayMs := IntParam(params, "delay", 0)
 
 	if text == "" && key == "" {
 		return StepResult{Action: "type"}, fmt.Errorf("specify text or key")
 	}
 
+	vOpts := getVerifyOptionsFromParams(params)
 	hasTargetedElement := false
+	var verifyElemID int
 
-	// Focus element if --target or --id specified
-	if target != "" {
+	// Focus element if ref, target, or id specified
+	if refParam != "" {
+		elem, _, err := resolveElementByRef(provider, app, window, 0, 0, refParam)
+		if err != nil {
+			return StepResult{Action: "type"}, err
+		}
+		hasTargetedElement = true
+		verifyElemID = elem.ID
+		cx := elem.Bounds[0] + elem.Bounds[2]/2
+		cy := elem.Bounds[1] + elem.Bounds[3]/2
+		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
+			return StepResult{Action: "type"}, fmt.Errorf("failed to focus element: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	} else if target != "" {
 		elem, _, err := resolveElementByText(provider, app, window, 0, 0, target, roles, exact, scopeID)
 		if err != nil {
 			return StepResult{Action: "type"}, err
 		}
 		hasTargetedElement = true
+		verifyElemID = elem.ID
 		cx := elem.Bounds[0] + elem.Bounds[2]/2
 		cy := elem.Bounds[1] + elem.Bounds[3]/2
 		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
@@ -309,12 +842,27 @@ func executeType(provider *platform.Provider, params map[string]interface{}, app
 			return StepResult{Action: "type"}, fmt.Errorf("element with id %d not found", id)
 		}
 		hasTargetedElement = true
+		verifyElemID = elem.ID
 		cx := elem.Bounds[0] + elem.Bounds[2]/2
 		cy := elem.Bounds[1] + elem.Bounds[3]/2
 		if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
 			return StepResult{Action: "type"}, fmt.Errorf("failed to focus element: %w", err)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Snapshot focused element for verification (after click-to-focus, before typing)
+	var preSnapshot elementSnapshot
+	if vOpts.Verify && hasTargetedElement && provider.Reader != nil {
+		elements, readErr := provider.Reader.ReadElements(platform.ReadOptions{App: app, Window: window})
+		if readErr == nil {
+			if focused := findFocusedElementRaw(elements); focused != nil {
+				preSnapshot = snapshotElement(focused)
+				verifyElemID = focused.ID
+			} else if el := findElementByID(elements, verifyElemID); el != nil {
+				preSnapshot = snapshotElement(el)
+			}
+		}
 	}
 
 	// Type text
@@ -363,37 +911,81 @@ func executeType(provider *platform.Provider, params map[string]interface{}, app
 		result.Focused = readFocusedElement(provider, app, window, 0, 0)
 	}
 
+	if vOpts.Verify && preSnapshot.Exists {
+		var fallbacks []fallbackAction
+		if text != "" && provider.ValueSetter != nil {
+			elemID := verifyElemID
+			fallbacks = append(fallbacks, fallbackAction{
+				Method: "set-value",
+				Execute: func() error {
+					return provider.ValueSetter.SetValue(platform.SetValueOptions{
+						App: app, Window: window,
+						ID: elemID, Value: text, Attribute: "value",
+					})
+				},
+			})
+		}
+		vr := verifyAction(provider, preSnapshot, vOpts, app, window, 0, 0, fallbacks, 0)
+		applyVerifyResult(&result, vr)
+	}
+
 	return result, nil
 }
 
-func executeAction(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteAction(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.ActionPerformer == nil {
 		return StepResult{Action: "action"}, fmt.Errorf("action not supported on this platform")
 	}
 
-	id := intParam(params, "id", 0)
-	actionName := stringParam(params, "action", "press")
-	text := stringParam(params, "text", "")
-	roles := stringParam(params, "roles", "")
-	exact := boolParam(params, "exact", false)
-	scopeID := intParam(params, "scope-id", 0)
-	windowID := intParam(params, "window-id", 0)
-	pid := intParam(params, "pid", 0)
+	id := IntParam(params, "id", 0)
+	actionName := StringParam(params, "action", "press")
+	text := StringParam(params, "text", "")
+	ref := StringParam(params, "ref", "")
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
+	windowID := IntParam(params, "window-id", 0)
+	pid := IntParam(params, "pid", 0)
 
-	if id == 0 && text == "" {
-		return StepResult{Action: "action"}, fmt.Errorf("specify id or text to target an element")
+	if id == 0 && text == "" && ref == "" {
+		return StepResult{Action: "action"}, fmt.Errorf("specify id, text, or ref to target an element")
 	}
 
+	vOpts := getVerifyOptionsFromParams(params)
+	var preSnapshot elementSnapshot
 	var preActionTarget *ElementInfo
-	if text != "" && id == 0 {
+
+	if ref != "" && id == 0 {
+		elem, _, err := resolveElementByRef(provider, app, window, windowID, pid, ref)
+		if err != nil {
+			return StepResult{Action: "action"}, err
+		}
+		id = elem.ID
+		preActionTarget = elementInfoFromElement(elem)
+		if vOpts.Verify {
+			preSnapshot = snapshotElement(elem)
+		}
+	} else if text != "" && id == 0 {
 		elem, _, err := resolveElementByText(provider, app, window, windowID, pid, text, roles, exact, scopeID)
 		if err != nil {
 			return StepResult{Action: "action"}, err
 		}
 		id = elem.ID
 		preActionTarget = elementInfoFromElement(elem)
+		if vOpts.Verify {
+			preSnapshot = snapshotElement(elem)
+		}
 	} else {
 		preActionTarget = readElementByID(provider, app, window, windowID, pid, id)
+		if vOpts.Verify && provider.Reader != nil {
+			if elements, readErr := provider.Reader.ReadElements(platform.ReadOptions{
+				App: app, Window: window, WindowID: windowID, PID: pid,
+			}); readErr == nil {
+				if el := findElementByID(elements, id); el != nil {
+					preSnapshot = snapshotElement(el)
+				}
+			}
+		}
 	}
 
 	opts := platform.ActionOptions{
@@ -409,34 +1001,64 @@ func executeAction(provider *platform.Provider, params map[string]interface{}, a
 		return StepResult{Action: "action"}, err
 	}
 
-	return StepResult{Action: "action", Target: preActionTarget}, nil
+	result := StepResult{Action: "action", Target: preActionTarget}
+
+	if vOpts.Verify && preSnapshot.Exists {
+		vr := verifyAction(provider, preSnapshot, vOpts, app, window, windowID, pid, nil, 0)
+		applyVerifyResult(&result, vr)
+	}
+
+	return result, nil
 }
 
-func executeSetValue(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteSetValue(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.ValueSetter == nil {
 		return StepResult{Action: "set-value"}, fmt.Errorf("set-value not supported on this platform")
 	}
 
-	id := intParam(params, "id", 0)
-	value := stringParam(params, "value", "")
-	attribute := stringParam(params, "attribute", "value")
-	text := stringParam(params, "text", "")
-	roles := stringParam(params, "roles", "")
-	exact := boolParam(params, "exact", false)
-	scopeID := intParam(params, "scope-id", 0)
-	windowID := intParam(params, "window-id", 0)
-	pid := intParam(params, "pid", 0)
+	id := IntParam(params, "id", 0)
+	value := StringParam(params, "value", "")
+	attribute := StringParam(params, "attribute", "value")
+	text := StringParam(params, "text", "")
+	ref := StringParam(params, "ref", "")
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
+	windowID := IntParam(params, "window-id", 0)
+	pid := IntParam(params, "pid", 0)
 
-	if id == 0 && text == "" {
-		return StepResult{Action: "set-value"}, fmt.Errorf("specify id or text to target an element")
+	if id == 0 && text == "" && ref == "" {
+		return StepResult{Action: "set-value"}, fmt.Errorf("specify id, text, or ref to target an element")
 	}
 
-	if text != "" && id == 0 {
+	vOpts := getVerifyOptionsFromParams(params)
+	var resolvedElem *model.Element
+	var preSnapshot elementSnapshot
+
+	if ref != "" && id == 0 {
+		elem, _, err := resolveElementByRef(provider, app, window, windowID, pid, ref)
+		if err != nil {
+			return StepResult{Action: "set-value"}, err
+		}
+		id = elem.ID
+		resolvedElem = elem
+	} else if text != "" && id == 0 {
 		elem, _, err := resolveElementByText(provider, app, window, windowID, pid, text, roles, exact, scopeID)
 		if err != nil {
 			return StepResult{Action: "set-value"}, err
 		}
 		id = elem.ID
+		resolvedElem = elem
+	} else if id > 0 && provider.Reader != nil {
+		if elements, readErr := provider.Reader.ReadElements(platform.ReadOptions{
+			App: app, Window: window, WindowID: windowID, PID: pid,
+		}); readErr == nil {
+			resolvedElem = findElementByID(elements, id)
+		}
+	}
+
+	if vOpts.Verify && resolvedElem != nil {
+		preSnapshot = snapshotElement(resolvedElem)
 	}
 
 	opts := platform.SetValueOptions{
@@ -453,23 +1075,51 @@ func executeSetValue(provider *platform.Provider, params map[string]interface{},
 		return StepResult{Action: "set-value"}, err
 	}
 
-	return StepResult{Action: "set-value"}, nil
+	result := StepResult{Action: "set-value"}
+
+	if vOpts.Verify && preSnapshot.Exists {
+		var fallbacks []fallbackAction
+		if provider.Inputter != nil && resolvedElem != nil && attribute == "value" {
+			elemBounds := resolvedElem.Bounds
+			fallbacks = append(fallbacks, fallbackAction{
+				Method: "type",
+				Execute: func() error {
+					cx := elemBounds[0] + elemBounds[2]/2
+					cy := elemBounds[1] + elemBounds[3]/2
+					if err := provider.Inputter.Click(cx, cy, platform.MouseLeft, 1); err != nil {
+						return err
+					}
+					time.Sleep(50 * time.Millisecond)
+					if err := provider.Inputter.KeyCombo([]string{"cmd", "a"}); err != nil {
+						return err
+					}
+					time.Sleep(30 * time.Millisecond)
+					return provider.Inputter.TypeText(value, 0)
+				},
+			})
+		}
+		vr := verifyAction(provider, preSnapshot, vOpts, app, window, windowID, pid, fallbacks, 0)
+		applyVerifyResult(&result, vr)
+	}
+
+	return result, nil
 }
 
-func executeScroll(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteScroll(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.Inputter == nil {
 		return StepResult{Action: "scroll"}, fmt.Errorf("input not available on this platform")
 	}
 
-	direction := stringParam(params, "direction", "")
-	amount := intParam(params, "amount", 3)
-	x := intParam(params, "x", 0)
-	y := intParam(params, "y", 0)
-	id := intParam(params, "id", 0)
-	text := stringParam(params, "text", "")
-	roles := stringParam(params, "roles", "")
-	exact := boolParam(params, "exact", false)
-	scopeID := intParam(params, "scope-id", 0)
+	direction := StringParam(params, "direction", "")
+	amount := IntParam(params, "amount", 3)
+	x := IntParam(params, "x", 0)
+	y := IntParam(params, "y", 0)
+	id := IntParam(params, "id", 0)
+	text := StringParam(params, "text", "")
+	ref := StringParam(params, "ref", "")
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
 
 	if direction == "" {
 		return StepResult{Action: "scroll"}, fmt.Errorf("direction is required (up, down, left, right)")
@@ -489,7 +1139,14 @@ func executeScroll(provider *platform.Provider, params map[string]interface{}, a
 		return StepResult{Action: "scroll"}, fmt.Errorf("invalid direction %q: use up, down, left, or right", direction)
 	}
 
-	if text != "" {
+	if ref != "" {
+		elem, _, err := resolveElementByRef(provider, app, window, 0, 0, ref)
+		if err != nil {
+			return StepResult{Action: "scroll"}, err
+		}
+		x = elem.Bounds[0] + elem.Bounds[2]/2
+		y = elem.Bounds[1] + elem.Bounds[3]/2
+	} else if text != "" {
 		elem, _, err := resolveElementByText(provider, app, window, 0, 0, text, roles, exact, scopeID)
 		if err != nil {
 			return StepResult{Action: "scroll"}, err
@@ -519,19 +1176,19 @@ func executeScroll(provider *platform.Provider, params map[string]interface{}, a
 	return StepResult{Action: "scroll"}, nil
 }
 
-func executeWait(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteWait(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.Reader == nil {
 		return StepResult{Action: "wait"}, fmt.Errorf("reader not available on this platform")
 	}
 
-	forText := stringParam(params, "for-text", "")
-	forRole := stringParam(params, "for-role", "")
-	forID := intParam(params, "for-id", 0)
-	gone := boolParam(params, "gone", false)
-	timeoutSec := intParam(params, "timeout", 30)
-	intervalMs := intParam(params, "interval", 500)
-	pid := intParam(params, "pid", 0)
-	windowID := intParam(params, "window-id", 0)
+	forText := StringParam(params, "for-text", "")
+	forRole := StringParam(params, "for-role", "")
+	forID := IntParam(params, "for-id", 0)
+	gone := BoolParam(params, "gone", false)
+	timeoutSec := IntParam(params, "timeout", 30)
+	intervalMs := IntParam(params, "interval", 500)
+	pid := IntParam(params, "pid", 0)
+	windowID := IntParam(params, "window-id", 0)
 
 	if forText == "" && forRole == "" && forID == 0 {
 		return StepResult{Action: "wait"}, fmt.Errorf("specify at least one condition: for-text, for-role, or for-id")
@@ -589,13 +1246,14 @@ func executeWait(provider *platform.Provider, params map[string]interface{}, app
 	}
 }
 
-func executeFocus(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteFocus(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.WindowManager == nil {
 		return StepResult{Action: "focus"}, fmt.Errorf("window management not available on this platform")
 	}
 
-	windowID := intParam(params, "window-id", 0)
-	pid := intParam(params, "pid", 0)
+	windowID := IntParam(params, "window-id", 0)
+	pid := IntParam(params, "pid", 0)
+	newDocument := BoolParam(params, "new-document", false)
 
 	if app == "" && window == "" && windowID == 0 && pid == 0 {
 		return StepResult{Action: "focus"}, fmt.Errorf("specify app, window, window-id, or pid")
@@ -612,24 +1270,39 @@ func executeFocus(provider *platform.Provider, params map[string]interface{}, ap
 		return StepResult{Action: "focus"}, err
 	}
 
+	if newDocument {
+		if provider.Inputter == nil {
+			return StepResult{Action: "focus"}, fmt.Errorf("input simulation not available (required for new-document)")
+		}
+		time.Sleep(300 * time.Millisecond)
+		if err := provider.Inputter.KeyCombo([]string{"escape"}); err != nil {
+			return StepResult{Action: "focus"}, fmt.Errorf("failed to dismiss dialog: %w", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if err := provider.Inputter.KeyCombo([]string{"cmd", "n"}); err != nil {
+			return StepResult{Action: "focus"}, fmt.Errorf("failed to create new document: %w", err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	return StepResult{Action: "focus"}, nil
 }
 
-func executeRead(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+func ExecuteRead(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
 	if provider.Reader == nil {
 		return StepResult{Action: "read"}, fmt.Errorf("reader not available on this platform")
 	}
 
-	formatStr := stringParam(params, "format", "agent")
-	pid := intParam(params, "pid", 0)
-	windowID := intParam(params, "window-id", 0)
+	formatStr := StringParam(params, "format", "agent")
+	pid := IntParam(params, "pid", 0)
+	windowID := IntParam(params, "window-id", 0)
 
 	readOpts := platform.ReadOptions{
 		App:      app,
 		Window:   window,
 		PID:      pid,
 		WindowID: windowID,
-		Depth:    intParam(params, "depth", 0),
+		Depth:    IntParam(params, "depth", 0),
 	}
 
 	elements, err := provider.Reader.ReadElements(readOpts)
@@ -656,8 +1329,85 @@ func executeRead(provider *platform.Provider, params map[string]interface{}, app
 	return StepResult{Action: "read", State: state}, nil
 }
 
-func executeSleep(params map[string]interface{}) (StepResult, error) {
-	ms := intParam(params, "ms", 0)
+func ExecuteAssert(provider *platform.Provider, params map[string]interface{}, app, window string) (StepResult, error) {
+	if provider.Reader == nil {
+		return StepResult{Action: "assert"}, fmt.Errorf("reader not available on this platform")
+	}
+
+	text := StringParam(params, "text", "")
+	id := IntParam(params, "id", 0)
+	roles := StringParam(params, "roles", "")
+	exact := BoolParam(params, "exact", false)
+	scopeID := IntParam(params, "scope-id", 0)
+	windowID := IntParam(params, "window-id", 0)
+	pid := IntParam(params, "pid", 0)
+	value := StringParam(params, "value", "")
+	valueContains := StringParam(params, "value-contains", "")
+	checked := BoolParam(params, "checked", false)
+	unchecked := BoolParam(params, "unchecked", false)
+	disabled := BoolParam(params, "disabled", false)
+	enabled := BoolParam(params, "enabled", false)
+	isFocused := BoolParam(params, "focused", false)
+	gone := BoolParam(params, "gone", false)
+	timeoutSec := IntParam(params, "timeout", 0)
+	intervalMs := IntParam(params, "interval", 500)
+
+	if text == "" && id == 0 {
+		return StepResult{Action: "assert"}, fmt.Errorf("specify text or id to target an element")
+	}
+
+	_, hasValue := params["value"]
+
+	opts := assertOptions{
+		provider:      provider,
+		appName:       app,
+		window:        window,
+		windowID:      windowID,
+		pid:           pid,
+		text:          text,
+		roles:         roles,
+		exact:         exact,
+		scopeID:       scopeID,
+		id:            id,
+		value:         value,
+		hasValueCheck: hasValue,
+		valueContains: valueContains,
+		checked:       checked,
+		unchecked:     unchecked,
+		disabled:      disabled,
+		enabled:       enabled,
+		isFocused:     isFocused,
+		gone:          gone,
+	}
+
+	if timeoutSec > 0 {
+		timeout := time.Duration(timeoutSec) * time.Second
+		interval := time.Duration(intervalMs) * time.Millisecond
+		deadline := time.Now().Add(timeout)
+		start := time.Now()
+
+		for {
+			result := checkAssert(opts)
+			if result.Pass {
+				elapsed := time.Since(start)
+				return StepResult{Action: "assert", Target: result.Element, Elapsed: fmt.Sprintf("%.1fs", elapsed.Seconds())}, nil
+			}
+			if time.Now().After(deadline) {
+				return StepResult{Action: "assert"}, fmt.Errorf("assert failed: %s", result.Error)
+			}
+			time.Sleep(interval)
+		}
+	}
+
+	result := checkAssert(opts)
+	if !result.Pass {
+		return StepResult{Action: "assert"}, fmt.Errorf("assert failed: %s", result.Error)
+	}
+	return StepResult{Action: "assert", Target: result.Element}, nil
+}
+
+func ExecuteSleep(params map[string]interface{}) (StepResult, error) {
+	ms := IntParam(params, "ms", 0)
 	if ms <= 0 {
 		return StepResult{Action: "sleep"}, fmt.Errorf("ms must be > 0")
 	}
@@ -667,7 +1417,7 @@ func executeSleep(params map[string]interface{}) (StepResult, error) {
 
 // Parameter extraction helpers for step maps
 
-func stringParam(params map[string]interface{}, key, defaultVal string) string {
+func StringParam(params map[string]interface{}, key, defaultVal string) string {
 	if v, ok := params[key]; ok {
 		if s, ok := v.(string); ok {
 			return s
@@ -678,7 +1428,7 @@ func stringParam(params map[string]interface{}, key, defaultVal string) string {
 	return defaultVal
 }
 
-func intParam(params map[string]interface{}, key string, defaultVal int) int {
+func IntParam(params map[string]interface{}, key string, defaultVal int) int {
 	if v, ok := params[key]; ok {
 		switch n := v.(type) {
 		case int:
@@ -692,11 +1442,38 @@ func intParam(params map[string]interface{}, key string, defaultVal int) int {
 	return defaultVal
 }
 
-func boolParam(params map[string]interface{}, key string, defaultVal bool) bool {
+func BoolParam(params map[string]interface{}, key string, defaultVal bool) bool {
 	if v, ok := params[key]; ok {
 		if b, ok := v.(bool); ok {
 			return b
 		}
 	}
 	return defaultVal
+}
+
+func ExecuteOpen(params map[string]interface{}) (StepResult, error) {
+	urlStr := StringParam(params, "url", "")
+	fileStr := StringParam(params, "file", "")
+	app := StringParam(params, "app", "")
+
+	if urlStr == "" && fileStr == "" && app == "" {
+		return StepResult{Action: "open"}, fmt.Errorf("specify url, file, or app")
+	}
+
+	var openArgs []string
+	if app != "" {
+		openArgs = append(openArgs, "-a", app)
+	}
+	if urlStr != "" {
+		openArgs = append(openArgs, urlStr)
+	} else if fileStr != "" {
+		openArgs = append(openArgs, fileStr)
+	}
+
+	openExec := exec.Command("open", openArgs...)
+	if out, err := openExec.CombinedOutput(); err != nil {
+		return StepResult{Action: "open"}, fmt.Errorf("open failed: %s (%w)", strings.TrimSpace(string(out)), err)
+	}
+
+	return StepResult{Action: "open"}, nil
 }

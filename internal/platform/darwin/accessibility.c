@@ -232,6 +232,7 @@ static void ax_traverse(AXUIElementRef elem, int parentID, int currentDepth,
     info->id = myID;
     info->parentID = parentID;
     info->role = ax_get_string_attr(elem, kAXRoleAttribute);
+    info->subrole = ax_get_string_attr(elem, kAXSubroleAttribute);
     info->title = ax_get_string_attr(elem, kAXTitleAttribute);
     info->value = ax_get_string_attr(elem, kAXValueAttribute);
     info->description = ax_get_string_attr(elem, kAXDescriptionAttribute);
@@ -425,6 +426,7 @@ void ax_free_elements(AXElementInfo* elements, int count) {
     if (!elements) return;
     for (int i = 0; i < count; i++) {
         free(elements[i].role);
+        free(elements[i].subrole);
         free(elements[i].title);
         free(elements[i].value);
         free(elements[i].description);

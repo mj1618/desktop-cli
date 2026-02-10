@@ -1,0 +1,30 @@
+# Gmail Compose & Send Script Template
+#
+# Usage with bash wrapper:
+#   ./scripts/gmail-compose.sh "matt@supplywise.app" "Test Email" "Test message body"
+#
+# Usage with direct YAML (replace {{TO}}, {{SUBJECT}}, {{BODY}} placeholders):
+#   desktop-cli do --app "Google Chrome" < scripts/gmail-compose.yaml
+#
+# This script uses the fill command for maximum speed:
+# - Reads UI tree once
+# - Fills all fields in single call
+# - Submits without extra clicks
+# - Typical execution: 3-5 seconds from open to sent
+#
+# The fill command is 4-8x faster than individual click/type operations.
+
+- open: { url: "https://gmail.com" }
+- wait: { for-text: "Compose", timeout: 10 }
+- click: { text: "Compose" }
+- sleep: { ms: 800 }
+- fill:
+    fields:
+      - label: "To"
+        value: "{{TO}}"
+      - label: "Subject"
+        value: "{{SUBJECT}}"
+      - label: "Body"
+        value: "{{BODY}}"
+    submit: "Send"
+- sleep: { ms: 2000 }

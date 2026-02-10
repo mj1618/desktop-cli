@@ -7,9 +7,11 @@ A command-line tool that lets AI agents read and interact with desktop UI elemen
 - **Read UI elements** — Get a compact YAML tree of buttons, links, text fields, and other elements in any window
 - **Click elements** — Click by element ID or screen coordinates
 - **Type text** — Simulate keyboard input and key combinations
+- **Open URLs/files/apps** — Open URLs in browsers, files with their default app, or launch applications in one call
 - **Focus windows** — Bring windows to the foreground
 - **Scroll & drag** — Scroll within windows or drag between points
 - **Screenshot** — Capture windows for vision model fallback
+- **Fill forms** — Set multiple form fields in one call with a single tree read
 - **Clipboard** — Read, write, and clear the system clipboard; grab selected text from any app
 - **Token efficient** — Short YAML keys, role abbreviations, and filtering to minimize agent token usage
 - **Fast** — Native accessibility APIs via CGo, no OCR or screenshots in the critical path
@@ -159,7 +161,39 @@ desktop-cli read --app "Chrome" --scope-id 156 --children
 # (dramatically reduces output — typically 20-30x fewer lines than YAML)
 desktop-cli read --app "Chrome" --format agent
 desktop-cli read --pid 1234 --format agent
+
+# Diff mode: return only what changed since a previous read (saves tokens)
+# Step 1: Initial read (note the ts field in the response)
+desktop-cli read --app "Chrome" --format agent
+# Response includes: ts: 1707504000
+
+# Step 2: Subsequent read with --since (returns only added/removed/changed elements)
+desktop-cli read --app "Chrome" --format agent --since 1707504000
+
+# Check what changed after an action
+desktop-cli read --app "Safari" --format agent   # ts: 1707504000
+desktop-cli click --text "Submit" --app "Safari"
+sleep 1
+desktop-cli read --app "Safari" --format agent --since 1707504000
 ```
+
+#### Diff Mode (`--since`)
+
+The `--since` flag returns only elements that changed since a previous read. Pass the `ts` value from a prior read response. This is far more token-efficient than processing the full tree repeatedly — a 200-element page with 3 changes returns ~20 tokens instead of ~400:
+
+Agent format diff output uses `+`/`-`/`~` prefixes:
+```
+# Gmail - Google Chrome (pid: 44037) [diff since 1707504000]
+
++ [201] row "New email from Alice" (100,400,800,40)
+- [95] row "Old email"
+~ [12] Search v="new query" (was "old query")
+# 148 elements unchanged
+```
+
+YAML/JSON format returns a structured `diff` object with `added`, `removed`, `changed`, and `unchanged_count` fields.
+
+Snapshots are stored in `/tmp/` and auto-expire after 60 seconds.
 
 #### Smart Defaults
 
@@ -168,6 +202,7 @@ When output is piped (typical agent context), smart defaults are applied automat
 - **Auto format**: `--format agent` is used when stdout is piped (not a terminal)
 - **Auto prune**: `--prune` is enabled when web content is detected (elements with "web" role)
 - **Auto role expansion**: `--roles "input"` auto-includes "other" for web apps (Chrome exposes some inputs as "other")
+- **Auto max-elements**: `--max-elements 200` for web content in agent format (caps output to 200 interactive elements, preventing 500KB+ outputs on complex pages like Wikipedia)
 
 Applied defaults are shown in the `smart_defaults` response field. Override any default with explicit flags:
 
@@ -182,13 +217,16 @@ desktop-cli read --app "Chrome" --format yaml
 # Override: disable auto-prune
 desktop-cli read --app "Chrome" --prune=false
 
+# Override: show all elements (no cap)
+desktop-cli read --app "Chrome" --max-elements 0
+
 # Disable all smart defaults:
 desktop-cli read --app "Chrome" --raw
 ```
 
 #### Agent Format (`--format agent`)
 
-The agent format produces ultra-compact output designed for AI agent consumption. It shows interactive (clickable) elements plus display text elements that contain values, one per line. Elements with zero-width or zero-height bounds (off-screen or virtualized) are automatically excluded:
+The agent format produces ultra-compact output designed for AI agent consumption. It shows interactive (clickable) elements plus display text elements that contain values, one per line. Elements with zero-width or zero-height bounds (off-screen or virtualized) are automatically excluded from both display output and text-based targeting (`--text`), preventing false ambiguity from invisible elements:
 
 ```
 # Gmail - Google Chrome (pid: 44037)
@@ -202,13 +240,106 @@ The agent format produces ultra-compact output designed for AI agent consumption
 [311] radio "Primary" (1168,392,251,56) selected
 ```
 
-Each line: `[id] role "label" (x,y,w,h) [flags]`
+Each line: `[id|ref] role "label" (x,y,w,h) [flags]`
 
 - **id** — Use with `click --id`, `action --id`, `type --id`, etc.
+- **ref** — Stable landmark-based reference (e.g. `toolbar/back`, `dialog/ok`). Use with `--ref` flag on commands. Refs are stable across reads — the same element gets the same ref even when IDs shift due to elements being added/removed.
 - **role** — Element type (btn, lnk, input, chk, radio, etc.)
 - **label** — Title or accessibility description
 - **bounds** — Screen position and size (x, y, width, height)
 - **flags** — `disabled`, `selected`, `focused`, `checked`/`unchecked`, `val="..."`, `display` (read-only text with a value)
+
+#### Screenshot Format (`--format screenshot`)
+
+The screenshot format combines an annotated screenshot with a structured element list in a single response. The screenshot has `[id]` labels that correspond directly to element IDs, so the agent can look at the image and immediately act with `click --id 42`:
+
+```bash
+# Visual + structured in one call (default 0.25 scale for token efficiency)
+desktop-cli read --app "Safari" --format screenshot
+
+# Higher resolution for complex UIs
+desktop-cli read --app "Chrome" --format screenshot --scale 0.5
+
+# Save screenshot to file instead of inline base64
+desktop-cli read --app "Safari" --format screenshot --screenshot-output /tmp/safari.png
+
+# Label all elements (default: interactive only)
+desktop-cli read --app "Safari" --format screenshot --all-elements
+
+# Scoped to descendants of a specific element
+desktop-cli read --app "Chrome" --format screenshot --scope-id 156
+```
+
+Output:
+```yaml
+ok: true
+action: read
+app: Safari
+pid: 5678
+image: "iVBOR..."  # base64-encoded annotated screenshot with [id] labels
+elements: |
+    # Contact Form - Safari (pid: 5678)
+    [42] input "Address" (200,50,800,30) val="https://example.com"
+    [89] btn "Submit" (200,400,100,32)
+```
+
+When `--screenshot-output` is specified, the `image` field contains the file path instead of base64.
+
+### Auto-Scope to Frontmost Dialog
+
+When a modal dialog, sheet, or popover is open, text-based element targeting (`--text`) automatically scopes the search to the overlay's subtree. This eliminates false matches from background elements behind the dialog.
+
+**How it works:**
+1. Detects overlays using macOS `AXSubrole` (AXDialog, AXSheet, etc.)
+2. Falls back to focus-based and bounds-based heuristics when subrole isn't available
+3. If the target text is found within the overlay, background matches are excluded
+4. If the target text is NOT found in the overlay, the full window tree is searched
+
+```bash
+# Auto-scopes to compose dialog — matches the Subject input, not inbox rows:
+desktop-cli click --text "Subject" --app "Chrome"
+
+# Disable auto-scoping to search the entire window:
+desktop-cli click --text "Subject" --app "Chrome" --no-auto-scope
+```
+
+Auto-scoping is transparent — it just works. The `--no-auto-scope` flag disables it when you explicitly want to target background elements.
+
+### Stable Element Refs
+
+Element IDs are sequential and shift between reads when elements are added or removed. Refs are stable, landmark-based paths (e.g. `toolbar/back`, `dialog/submit`) that identify elements by their semantic position in the UI tree. The same element gets the same ref across reads.
+
+Refs appear in agent format output as `[id|ref]`:
+
+```
+[11|toolbar/back] btn "Back" (917,239,34,34)
+[12|toolbar/forward] btn "Forward" (953,239,34,34) disabled
+[16|toolbar/address-and-search-bar] input "Address and search bar" (1069,244,1180,24) val="mail.google.com/..."
+```
+
+Use `--ref` on any targeting command instead of `--id` or `--text`:
+
+```bash
+# Target by ref (stable across reads — no need to re-read to get current ID)
+desktop-cli click --ref "toolbar/back" --app "Safari"
+desktop-cli type --ref "toolbar/address-and-search-bar" --app "Safari" --text "https://example.com" --key "enter"
+desktop-cli action --ref "dialog/submit" --app "Safari"
+
+# Partial ref matching (suffix match when unambiguous)
+desktop-cli click --ref "submit" --app "Safari"        # matches "dialog/form/submit"
+desktop-cli click --ref "back" --app "Safari"           # matches "toolbar/back"
+
+# Refs also work in batch steps
+desktop-cli do --app "Safari" <<'EOF'
+- click: { ref: "toolbar/address-and-search-bar" }
+- type: { text: "https://example.com", key: "enter" }
+EOF
+```
+
+Refs are built from landmark paths in the accessibility tree:
+- **Landmarks** (kept in path): `toolbar`, `menu`, `list`, `tab`, dialogs
+- **Skipped** (transparent in path): `window`, unlabeled `group`, `scroll`, `web`
+- **Duplicates** get `.1`, `.2` suffixes (e.g. `toolbar/separator.1`, `toolbar/separator.2`)
 
 ### Click an element
 
@@ -249,6 +380,27 @@ desktop-cli click --text "Submit" --app "Safari" --post-read
 # Click with delay before reading state (for actions that trigger animations)
 desktop-cli click --text "Submit" --app "Safari" --post-read --post-read-delay 500
 ```
+
+### Hover over an element
+
+```bash
+# Hover over an element by text (triggers hover-dependent UI like tooltips, row actions)
+desktop-cli hover --text "Important Email" --app "Chrome"
+
+# Hover by element ID
+desktop-cli hover --id 42 --app "Chrome"
+
+# Hover at absolute screen coordinates
+desktop-cli hover --x 500 --y 300
+
+# Hover with role filter
+desktop-cli hover --text "Settings" --roles "menuitem" --app "Safari"
+
+# Hover and read the new UI state (e.g. reveal hidden row actions or tooltips)
+desktop-cli hover --text "Important Email" --app "Chrome" --post-read --post-read-delay 300
+```
+
+The hover command moves the mouse cursor without clicking. This is essential for UIs that reveal controls, tooltips, or menus only on hover (e.g. Gmail row actions, navigation flyout menus, icon tooltips). Use `--post-read` to capture the UI state after hovering (including newly revealed elements).
 
 ### Type text or key combos
 
@@ -313,6 +465,20 @@ focused:
     t: Subject
     v: hello
     b: [550, 792, 421, 20]
+```
+
+If the focused element doesn't appear to be text-editable (e.g. a `cell` or `group`), a `warning` field is included:
+
+```yaml
+ok: true
+action: type
+text: Test List
+focused:
+    i: 9
+    r: cell
+    d: My Lists
+    b: [231, 529, 260, 22]
+warning: "focused element does not appear to be editable — text may have been entered into a different field"
 ```
 
 For `--key` actions, the response includes the currently focused element after the key press:
@@ -433,6 +599,73 @@ desktop-cli wait --app "Safari" --for-id 5
 desktop-cli wait --app "Safari" --for-text "Done" --interval 200
 ```
 
+### Assert UI conditions
+
+```bash
+# Assert element with text "Success" exists
+desktop-cli assert --app "Safari" --text "Success"
+
+# Assert element exists with specific role
+desktop-cli assert --app "Safari" --text "Submit" --roles "btn"
+
+# Assert element by ID has a specific value
+desktop-cli assert --app "Safari" --id 42 --value "hello world"
+
+# Assert element value contains a substring
+desktop-cli assert --app "Safari" --id 42 --value-contains "expected"
+
+# Assert element is checked/selected
+desktop-cli assert --app "Safari" --text "Remember me" --checked
+
+# Assert element is NOT checked
+desktop-cli assert --app "Safari" --text "Remember me" --unchecked
+
+# Assert element is disabled
+desktop-cli assert --app "Safari" --text "Submit" --disabled
+
+# Assert element is enabled
+desktop-cli assert --app "Safari" --text "Submit" --enabled
+
+# Assert element is focused
+desktop-cli assert --app "Safari" --text "Search" --is-focused
+
+# Assert element does NOT exist (gone)
+desktop-cli assert --app "Safari" --text "Loading..." --gone
+
+# Assert with timeout (poll until condition met or fail)
+desktop-cli assert --app "Safari" --text "Success" --timeout 5
+```
+
+**Response format:**
+
+Pass:
+```yaml
+ok: true
+action: assert
+pass: true
+element:
+    i: 42
+    r: btn
+    t: Submit
+    b: [200, 400, 100, 32]
+```
+
+Fail:
+```yaml
+ok: false
+action: assert
+pass: false
+error: "expected value \"hello\" but got \"world\""
+element:
+    i: 42
+    r: input
+    t: Search
+    v: world
+    b: [200, 400, 100, 32]
+```
+
+Exit code: 0 on pass, 1 on fail. Enables shell-level `&&` chaining. Use `--timeout` to poll until the condition is met (like `wait` but with property assertions).
+
 ### Batch multiple actions (`do`)
 
 ```bash
@@ -477,9 +710,52 @@ desktop-cli do --app "Safari" --stop-on-error=false <<'EOF'
 EOF
 ```
 
-Steps are provided as a YAML list on stdin. Each step is a command name with its flags as a map. Supported step types: `click`, `type`, `action`, `set-value`, `scroll`, `wait`, `focus`, `read`, `sleep`.
+Steps are provided as a YAML list on stdin. Each step is a command name with its flags as a map. Supported step types: `click`, `hover`, `type`, `action`, `set-value`, `fill`, `scroll`, `wait`, `assert`, `focus`, `read`, `open`, `sleep`, `if-exists`, `if-focused`, `try`.
 
 The `--app` and `--window` flags set defaults for all steps; per-step `app`/`window` keys override them. By default, execution stops on the first error (`--stop-on-error`). Display elements are collected once at the end.
+
+#### Conditional steps
+
+Conditional steps enable branching and error handling within a batch, eliminating LLM round-trips for non-deterministic UI flows (cookie banners, login prompts, variable load times).
+
+**`if-exists`** — branch based on whether an element is present:
+
+```bash
+desktop-cli do --app "Chrome" <<'EOF'
+- if-exists: { text: "Accept Cookies", roles: "btn" }
+  then:
+    - click: { text: "Accept Cookies" }
+  else:
+    - read: { format: "agent" }
+- click: { text: "Continue" }
+EOF
+```
+
+**`if-focused`** — branch based on which element has focus:
+
+```bash
+desktop-cli do --app "Safari" <<'EOF'
+- if-focused: { roles: "input" }
+  then:
+    - type: { text: "search query", key: "enter" }
+  else:
+    - click: { text: "Search", roles: "input" }
+    - type: { text: "search query", key: "enter" }
+EOF
+```
+
+**`try`** — execute steps and continue even if they fail (replaces global `--stop-on-error=false` with per-section error handling):
+
+```bash
+desktop-cli do --app "Chrome" <<'EOF'
+- try:
+    - click: { text: "Dismiss" }
+    - wait: { for-text: "Dismiss", gone: true, timeout: 2 }
+- click: { text: "Continue" }
+EOF
+```
+
+Conditional steps can be nested and combined freely. The `then` and `else` branches are optional — `if-exists` without `else` simply skips when the element is not found. Response includes `matched`, `branch`, and `substeps` fields showing which path was taken.
 
 ### Find elements across windows
 
@@ -582,6 +858,81 @@ The `state` field contains the same output as `read --format agent`. When `--pos
 desktop-cli click --text "Submit" --app "Safari" --post-read --post-read-delay 500
 ```
 
+**Auto max-elements:** For web content (Chrome, Safari, etc.), `--post-read` automatically caps output to 200 elements — the same smart default as `read --format agent`. This prevents 30KB+ responses on complex pages that would trigger file-based storage in agent environments. Use `--post-read-max-elements` to override:
+
+```bash
+# Auto-cap: 200 elements for web content, unlimited for native apps
+desktop-cli click --text "Submit" --app "Chrome" --post-read
+
+# Override: show all elements (no cap)
+desktop-cli click --text "Submit" --app "Chrome" --post-read --post-read-max-elements 0
+
+# Override: cap to 50 elements
+desktop-cli click --text "Submit" --app "Chrome" --post-read --post-read-max-elements 50
+```
+
+### Verify actions (`--verify`)
+
+The `--verify` flag is available on `click`, `type`, `action`, and `set-value`. It checks whether the action caused a visible UI change, and retries with a fallback strategy if not:
+
+```bash
+# Click with verification
+desktop-cli click --text "Submit" --app "Safari" --verify
+
+# Type with verification
+desktop-cli type --target "Search" --app "Safari" --text "query" --verify
+
+# Set value with verification
+desktop-cli set-value --text "Name" --value "John" --app "Safari" --verify
+
+# Custom delay before verifying (default: 100ms)
+desktop-cli click --text "Submit" --app "Safari" --verify --verify-delay 500
+
+# Custom max retries (default: 2)
+desktop-cli click --text "Submit" --app "Safari" --verify --max-retries 3
+```
+
+**Fallback chains per command:**
+- **click**: coordinate click → accessibility "press" action → offset click (+2px)
+- **type**: keystroke simulation → set-value (direct value injection)
+- **set-value**: direct value injection → click + select-all + type (keystroke simulation)
+- **action**: accessibility action only (already the most reliable method, no fallback)
+
+**Response format with `--verify`:**
+
+```yaml
+# Success on first attempt:
+ok: true
+action: click
+verified: true
+
+# Success after retry:
+ok: true
+action: click
+verified: true
+retried: true
+retry_method: action
+retry_reason: "no UI change detected, retried with action"
+
+# All retries failed:
+ok: true
+action: click
+verified: false
+retried: true
+retry_method: offset-click
+retry_reason: "action did not produce expected UI change after retries"
+```
+
+Without `--verify`, behavior is unchanged — no extra reads are performed.
+
+Verification requires an element target (`--text`, `--ref`, or `--id`). Coordinate-only clicks cannot be verified. When used with `--post-read`, the verification tree read is reused (no extra cost).
+
+In `do` batch steps, use `verify: true`:
+```yaml
+- click: { text: "Submit", verify: true }
+- type: { target: "Search", text: "query", verify: true, verify-delay: 200 }
+```
+
 ### Set element values
 
 ```bash
@@ -602,6 +953,77 @@ desktop-cli set-value --id 4 --attribute focused --value "true" --app "Safari"
 
 # Set selection state
 desktop-cli set-value --id 8 --attribute selected --value "true" --app "Finder"
+```
+
+### Fill form fields
+
+```bash
+# Fill multiple fields by label (reads UI tree only once)
+desktop-cli fill --app "Safari" \
+  --field "Full Name=John Doe" \
+  --field "Email=john@example.com" \
+  --field "Phone=+1-555-0100"
+
+# Fill and submit in one call
+desktop-cli fill --app "Safari" \
+  --field "Full Name=John Doe" \
+  --field "Email=john@example.com" \
+  --submit "Submit"
+
+# Use keystroke typing instead of direct value setting
+desktop-cli fill --app "Chrome" \
+  --field "Search=coffee shops" \
+  --method type
+
+# Target fields by element ID
+desktop-cli fill --app "Safari" --field "id:42=John Doe" --field "id:43=john@example.com"
+
+# Use Tab to navigate between fields (for forms without clear labels)
+desktop-cli fill --app "Safari" \
+  --field "Full Name=John Doe" \
+  --field "Email=john@example.com" \
+  --tab-between
+
+# Stdin YAML input for many fields
+desktop-cli fill --app "Safari" <<'EOF'
+fields:
+  - label: "Full Name"
+    value: "John Doe"
+  - label: "Email"
+    value: "john@example.com"
+  - id: 44
+    value: "+1-555-0100"
+    method: type
+submit: "Submit"
+EOF
+```
+
+The `fill` command reads the UI tree **once** and resolves all fields from the same snapshot, then sets each value. This is 4-8x faster than calling `type --target` or `set-value` per field, since each of those commands re-reads the entire tree.
+
+**Methods:**
+- `set-value` (default) — Sets values instantly via the accessibility API. Fastest and most reliable.
+- `type` — Simulates keystrokes. Use for apps that intercept keystroke events (e.g. auto-formatting phone numbers).
+
+**Response format:**
+
+```yaml
+ok: true
+action: fill
+fields_set: 3
+results:
+  - label: "Full Name"
+    ok: true
+    target: { i: 42, r: input, t: "Full Name", v: "John Doe" }
+  - label: "Email"
+    ok: true
+    target: { i: 43, r: input, t: "Email", v: "john@example.com" }
+  - label: "Phone"
+    ok: true
+    target: { i: 44, r: input, t: "Phone", v: "+1-555-0100" }
+submitted:
+    i: 89
+    r: btn
+    t: Submit
 ```
 
 ### Clipboard
@@ -625,6 +1047,34 @@ desktop-cli clipboard grab --app "Google Chrome" --window "Gmail"
 
 The `clipboard grab` command is a convenience for extracting text from apps where the accessibility tree may not expose content (e.g. Gmail compose body, contenteditable fields).
 
+### Open URLs, files, or apps
+
+```bash
+# Open a URL in the default browser
+desktop-cli open "https://example.com"
+desktop-cli open --url "https://example.com"
+
+# Open a URL in a specific browser
+desktop-cli open --url "https://example.com" --app "Google Chrome"
+
+# Open a file with its default app
+desktop-cli open "/path/to/document.pdf"
+desktop-cli open --file "/path/to/document.pdf"
+
+# Open a file with a specific app
+desktop-cli open --file "/path/to/image.png" --app "Preview"
+
+# Launch an application
+desktop-cli open --app "Calculator"
+desktop-cli open --app "System Settings"
+
+# Open and wait for the window to appear
+desktop-cli open --url "https://example.com" --app "Safari" --wait --timeout 10
+
+# Open and read the resulting UI state
+desktop-cli open --url "https://example.com" --app "Safari" --post-read --post-read-delay 2000
+```
+
 ### Focus a window
 
 ```bash
@@ -639,7 +1089,12 @@ desktop-cli focus --app "Safari" --window "GitHub"
 
 # Focus by system window ID
 desktop-cli focus --window-id 5678
+
+# Focus and create a new blank document (dismisses file-open dialogs first)
+desktop-cli focus --app "TextEdit" --new-document
 ```
+
+The `--new-document` flag is useful for apps like TextEdit that show a file-open dialog on launch. It presses Escape to dismiss any dialog, then Cmd+N to create a blank document — reducing what would be 6-7 agent round-trips to a single command.
 
 ### Observe UI changes
 
@@ -732,6 +1187,48 @@ Each element is drawn with:
 Default behavior shows only interactive elements (buttons, links, inputs, etc.). Use `--all-elements` to label everything in the accessibility tree.
 
 See `desktop-cli --help` and `desktop-cli <command> --help` for full usage details.
+
+## MCP Server Mode
+
+Run `desktop-cli` as a persistent MCP (Model Context Protocol) server, exposing all commands as tools. AI agents call tools directly without shell overhead (~50-100ms saved per call).
+
+### Start the server
+
+```bash
+# stdio transport (default — for Claude Code, Cursor, etc.)
+desktop-cli serve
+
+# HTTP transport (for remote agents)
+desktop-cli serve --transport streamable-http --port 8080
+
+# Disable element tree cache
+desktop-cli serve --cache-ttl 0
+```
+
+### Configure with Claude Code
+
+Add to your `~/.claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "desktop-cli": {
+      "command": "desktop-cli",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Available tools
+
+All CLI commands are exposed as MCP tools: `list`, `read`, `click`, `type`, `action`, `set_value`, `scroll`, `hover`, `focus`, `fill`, `wait`, `assert`, `screenshot`, `open`, `do`.
+
+Parameters match CLI flags (e.g. `--app` becomes `app`, `--text` becomes `text`).
+
+### Element tree cache
+
+The server caches accessibility tree reads for 500ms (configurable via `--cache-ttl`). Write actions (`click`, `type`, `action`, `set_value`, `scroll`, `hover`, `focus`, `fill`) automatically invalidate the cache. Set `--cache-ttl 0` to disable caching.
 
 ## Development
 

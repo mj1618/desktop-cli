@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/mj1618/desktop-cli/internal/output"
 	"github.com/mj1618/desktop-cli/internal/platform"
@@ -10,11 +11,12 @@ import (
 
 // FocusResult is the YAML output of a successful focus.
 type FocusResult struct {
-	OK     bool   `yaml:"ok"               json:"ok"`
-	Action string `yaml:"action"           json:"action"`
-	App    string `yaml:"app,omitempty"    json:"app,omitempty"`
-	Window string `yaml:"window,omitempty" json:"window,omitempty"`
-	PID    int    `yaml:"pid,omitempty"    json:"pid,omitempty"`
+	OK          bool   `yaml:"ok"                      json:"ok"`
+	Action      string `yaml:"action"                  json:"action"`
+	App         string `yaml:"app,omitempty"           json:"app,omitempty"`
+	Window      string `yaml:"window,omitempty"        json:"window,omitempty"`
+	PID         int    `yaml:"pid,omitempty"           json:"pid,omitempty"`
+	NewDocument bool   `yaml:"new_document,omitempty"  json:"new_document,omitempty"`
 }
 
 var focusCmd = &cobra.Command{
@@ -30,6 +32,7 @@ func init() {
 	focusCmd.Flags().String("window", "", "Focus window by title substring")
 	focusCmd.Flags().Int("window-id", 0, "Focus window by system ID")
 	focusCmd.Flags().Int("pid", 0, "Focus application by PID")
+	focusCmd.Flags().Bool("new-document", false, "After focusing, dismiss any open dialog (Escape) and create a new document (Cmd+N)")
 }
 
 func runFocus(cmd *cobra.Command, args []string) error {
@@ -42,6 +45,7 @@ func runFocus(cmd *cobra.Command, args []string) error {
 	window, _ := cmd.Flags().GetString("window")
 	windowID, _ := cmd.Flags().GetInt("window-id")
 	pid, _ := cmd.Flags().GetInt("pid")
+	newDocument, _ := cmd.Flags().GetBool("new-document")
 
 	if appName == "" && window == "" && windowID == 0 && pid == 0 {
 		return fmt.Errorf("specify --app, --window, --window-id, or --pid")
@@ -62,11 +66,33 @@ func runFocus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// --new-document: dismiss any file-open dialog and create a blank document
+	if newDocument {
+		if provider.Inputter == nil {
+			return fmt.Errorf("input simulation not available on this platform (required for --new-document)")
+		}
+		// Wait for the app to settle after focusing
+		time.Sleep(300 * time.Millisecond)
+
+		// Press Escape to dismiss any open dialog (e.g. file-open dialog in TextEdit)
+		if err := provider.Inputter.KeyCombo([]string{"escape"}); err != nil {
+			return fmt.Errorf("failed to dismiss dialog: %w", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+
+		// Press Cmd+N to create a new blank document
+		if err := provider.Inputter.KeyCombo([]string{"cmd", "n"}); err != nil {
+			return fmt.Errorf("failed to create new document: %w", err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
 	return output.Print(FocusResult{
-		OK:     true,
-		Action: "focus",
-		App:    appName,
-		Window: window,
-		PID:    pid,
+		OK:          true,
+		Action:      "focus",
+		App:         appName,
+		Window:      window,
+		PID:         pid,
+		NewDocument: newDocument,
 	})
 }

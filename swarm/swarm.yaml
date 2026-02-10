@@ -66,6 +66,6 @@ tasks:
 
 pipelines:
   development:
-    iterations: 5
-    parallelism: 2
+    iterations: 2
+    parallelism: 5
     tasks: [coder, tester]

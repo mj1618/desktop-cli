@@ -6,6 +6,7 @@
 typedef struct {
     int id;
     char* role;
+    char* subrole;
     char* title;
     char* value;
     char* description;
